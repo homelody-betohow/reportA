@@ -66,6 +66,11 @@ otto_file_df = otto_file_df[otto_file_df['Ausgaben'] != 0]
 for col in otto_file_df.columns:
     otto_file_df[col] = otto_file_df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
 
+# # 保存原始文件
+# original_file_oath = otto_file_path.rsplit('\\', 1)[0] + '\\(original)' + otto_file_path.rsplit('\\', 1)[-1]
+# otto_file_df.to_csv(original_file_oath, index=False)
+
+
 # OTTO 源表部分行 SKU 为空，用「广告-SKU关系对应」按货号(Artikelnummer)补仓库SKU
 product_map_sku_path = fr"{DESKTOP_ROOT}\广告-SKU关系对应.xlsx"
 otto_file_df = sku_mappings(
