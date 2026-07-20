@@ -21,14 +21,22 @@ main_file_df = pd.read_excel(main_file_path)
 guang_gao_path = fr'{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\(处理完成)所有平台广告费用.xlsx'
 guang_gao_df = pd.read_excel(guang_gao_path)
 
-# 以儿子-站点识别码为键进行合并，选择左连接（left join），这样可以确保表1的所有数据都被保留
-result_df = pd.merge(main_file_df, guang_gao_df[['儿子-站点识别码', '广告费(非AMZ)']], on='儿子-站点识别码', how='left')
+# 以SKU-站点识别码为键进行合并，选择左连接（left join），这样可以确保表1的所有数据都被保留
+result_df = pd.merge(main_file_df, guang_gao_df[['SKU-站点识别码', '广告费(非AMZ)']], on='SKU-站点识别码', how='left')
 
 # 找出表2中在表1中不存在的行
-missing_rows = guang_gao_df[~guang_gao_df['儿子-站点识别码'].isin(main_file_df['儿子-站点识别码'])]
+missing_rows = guang_gao_df[~guang_gao_df['SKU-站点识别码'].isin(main_file_df['SKU-站点识别码'])]
 
 # 将这些缺失的行添加到结果中
 result_df = pd.concat([result_df, missing_rows], ignore_index=True)
+
+# 空值的地方——补 0（分销列除外）
+if '分销' not in result_df.columns:
+    result_df['分销'] = '否'
+else:
+    result_df['分销'] = result_df['分销'].replace({0: '否', '0': '否'}).fillna('否')
+_fill_cols = [c for c in result_df.columns if c != '分销']
+result_df[_fill_cols] = result_df[_fill_cols].fillna(0)
 
 # 确保所有期望的列都存在
 expected_columns = list(main_file_df.columns) + ['广告费(非AMZ)']
@@ -36,7 +44,7 @@ for col in expected_columns:
     if col not in result_df.columns:
         result_df[col] = None  # 如果列不存在，添加该列并填充为 None
 
-# 表1中没有和表2相同的儿子-站点识别码，将新增的两列在对应行单元格填充为0
+# 表1中没有和表2相同的SKU-站点识别码，将新增的两列在对应行单元格填充为0
 result_df[['广告费(非AMZ)']] = result_df[['广告费(非AMZ)']].fillna(0)
 # 重新排序，确保列的顺序符合要求
 result_df = result_df[expected_columns]

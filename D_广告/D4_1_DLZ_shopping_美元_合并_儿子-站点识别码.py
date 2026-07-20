@@ -13,7 +13,7 @@ _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
 from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name
-from A_报表.Z_method.split_rows_data_拆分SKU_1个加号_逗号 import split_one_rows_data
+from A_报表.Z_method.split_rows_data_SKU import split_one_rows_data
 from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 
 
@@ -106,21 +106,21 @@ all_dlz_df_1 = all_dlz_df_1.rename(columns={'产品 ID': 'SKU'})
 for col in all_dlz_df_1.columns:
     all_dlz_df_1[col] = all_dlz_df_1[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
 
-new_column_name = "儿子-站点识别码"  # 新列名
+new_column_name = "SKU-站点识别码"  # 新列名
 new_column_data = all_dlz_df_1["站点"] + all_dlz_df_1["SKU"]  # 新列数据
 target_column = "SKU"  # 目标列名（在其后插入）
 insert_position = all_dlz_df_1.columns.get_loc(target_column) + 1  # 计算插入位置
 all_dlz_df_1.insert(insert_position, new_column_name, new_column_data)  # 插入新列
 
-# 按照 '儿子-站点识别码' 列进行分组，并对 '费用' 列进行汇总
-grouped_df = all_dlz_df_1.groupby('儿子-站点识别码').agg({
+# 按照 'SKU-站点识别码' 列进行分组，并对 '费用' 列进行汇总
+grouped_df = all_dlz_df_1.groupby('SKU-站点识别码').agg({
     '费用': 'sum',  # 汇总 费用
     'SKU': 'first',  # 保留每组的第一行数据
     '站点': 'first',  # 保留每组的第一行数据
 }).reset_index()
 
 # 保存目标列（shopping 报表无「商家 ID」列）
-grouped_df = grouped_df[['SKU', '儿子-站点识别码', '费用', '站点']]
+grouped_df = grouped_df[['SKU', 'SKU-站点识别码', '费用', '站点']]
 
 # 将处理后的数据保存到新的Excel文件
 output_file_path = dlz_file_paths[0].rsplit('\\', 1)[0] + '\\(处理完成)DLZ广告-shopping-美元.xlsx'

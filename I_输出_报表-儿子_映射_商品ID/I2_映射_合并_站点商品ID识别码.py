@@ -47,8 +47,8 @@ main_file_df_2 = sku_mappings(
 # 重命名列
 main_file_df_2 = main_file_df_2.rename(columns={'映射产品编码': 'SKU'})
 
-main_file_df_2["站点商品ID识别码"] = main_file_df_2["站点"] + main_file_df_2["商品ID"]  # 新列数据
-main_file_df_2["平台商品ID识别码"] = main_file_df_2["平台"] + main_file_df_2["商品ID"]  # 新列数据
+main_file_df_2["站点商品ID识别码"] = main_file_df_2["站点"].astype(str) + main_file_df_2["商品ID"].astype(str)
+main_file_df_2["平台商品ID识别码"] = main_file_df_2["平台"].astype(str) + main_file_df_2["商品ID"].astype(str)
 
 # 按照 '站点商品ID识别码' 列进行分组，并对 费用 列进行汇总
 grouped_df = main_file_df_2.groupby('站点商品ID识别码').agg({
@@ -57,6 +57,7 @@ grouped_df = main_file_df_2.groupby('站点商品ID识别码').agg({
     "站点": 'first',
     "平台": 'first',
     "平台商品ID识别码": 'first',
+    "分销": 'first',
     "销量": 'sum',
     "平台销售额": 'sum',
     "退款数量": 'sum',

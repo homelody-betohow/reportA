@@ -25,12 +25,13 @@ RMA_file_df = RMA_file_df.rename(columns={'退款金额': '退款额'})
 # 为了和 利润报表退款 的表头 一致
 RMA_file_df['销售退款金额VAT-amazon'] = 0
 RMA_file_df['销售退款金额的佣金'] = 0
-# 按照 '儿子-站点识别码' 列进行分组，汇总
-RMA_file_df_1 = RMA_file_df.groupby('儿子-站点识别码').agg({
+# 按照 'SKU-站点识别码' 列进行分组，汇总
+RMA_file_df_1 = RMA_file_df.groupby('SKU-站点识别码').agg({
     'SKU': 'first',  # 保留每组的第一行数据
     '站点': 'first',  # 保留每组的第一行数据
     '平台': 'first',  # 保留每组的第一行数据
-    '儿子-平台识别码': 'first',  # 保留每组的第一行数据
+    'SKU-平台识别码': 'first',  # 保留每组的第一行数据
+    '分销': lambda x: '是' if (x == '是').any() else '否',
     '退款数量': 'sum',
     '退款额': 'sum',
     '销售退款金额VAT-amazon': 'sum',

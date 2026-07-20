@@ -9,7 +9,7 @@ _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
-from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name, USD_to_EUR
+from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name, USD_to_EUR, SKU_NW_DISCOUNT
 from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 from A_报表.Z_method.style import Color
 
@@ -45,6 +45,12 @@ platform_site_condition = (
 no_adjust_mask = sku_condition | platform_site_condition
 # 对“需要 * 1.13”的行（no_adjust_mask 为 False）做 *1.13 并保留两位小数
 main_file_df.loc[~no_adjust_mask, cost_cols] = np.round(main_file_df.loc[~no_adjust_mask, cost_cols] * 1.13, 2)
+
+
+# # 2026-06-05 调整：SKU以 -NW 结尾的
+nw_suffix_mask = main_file_df['SKU'].astype(str).str.endswith('-NW')
+main_file_df.loc[nw_suffix_mask, cost_cols] *= SKU_NW_DISCOUNT
+print(f"{Color.YELLOW}2026-06-05 调整：SKU以 -NW 结尾的，采购成本 打折：{SKU_NW_DISCOUNT}{Color.RESET} \n")
 
 # 参与毛利计算的列先补 0，避免 NaN（如月租未摊分）导致整行毛利变 NaN 后被 fillna 清零
 _gross_profit_cols = (

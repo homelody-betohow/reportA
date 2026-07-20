@@ -1,5 +1,4 @@
 import pandas as pd
-from datetime import datetime
 import importlib.util
 from pathlib import Path
 # 须在 import A_报表 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
@@ -31,7 +30,7 @@ main_df_1 = main_df_1.rename(columns={'映射销售经理': '销售经理'})
 # CD平台  的  销售经理  替换为 空
 main_df_1.loc[main_df_1['平台'] == 'CD', '销售经理'] = ''
 # 新增列：仓租识别码，平台+产品状态
-main_df_1['仓租识别码'] = main_df_1['平台'] + main_df_1['产品状态'].astype(str)
+main_df_1['仓租识别码'] = main_df_1['平台'].astype(str) + main_df_1['产品状态'].astype(str)
 
 # 表头 重新排序
 main_df_1 = main_df_1[[
@@ -94,18 +93,14 @@ cols = ['商品ID', 'SKU', '平台', '站点', '平台商品ID识别码', '站�
 main_df_1[cols] = main_df_1[cols].replace(0, '')
 
 # 刷新一下 仓租识别码
-main_df_1['仓租识别码'] = main_df_1['平台'] + main_df_1['产品状态'].astype(str)
+main_df_1['仓租识别码'] = main_df_1['平台'].astype(str) + main_df_1['产品状态'].astype(str)
 
 if folder_name == '日报':
-    # 获取日报的完整日期
-    current_year = datetime.now().year  # 获取当前年份
-    # 解析日期
-    day_11 = shared_date.split('-')[0]
-    day_22 = shared_date.split('-')[1]
-    month_1, day_1 = map(int, day_11.split('.'))
-    month_2, day_2 = map(int, day_22.split('.'))
-    # 格式化为完整的日期字符串
-    full_date = f"{month_1}月{day_1}日-{month_2}月{day_2}日"
+    # 解析 shared_date（如 7.1-7.6），格式化为 mm月dd日
+    start_md, end_md = shared_date.split('-')
+    month_1, day_1 = map(int, start_md.split('.'))
+    month_2, day_2 = map(int, end_md.split('.'))
+    full_date = f"{month_1:02d}/{day_1:02d}-{month_2:02d}/{day_2:02d}"
     print(full_date)
     # 找到“商品ID”列的索引位置
     product_id_index = main_df_1.columns.get_loc('商品ID')

@@ -25,20 +25,26 @@ RMA_file_df = RMA_file_df.dropna(axis=1, how='all')
 amazon_file_df = amazon_file_df.dropna(axis=1, how='all')
 # 合并 两个退款表格
 main_df = pd.concat([RMA_file_df, amazon_file_df], ignore_index=True)
-# SKU、儿子-站点识别码、儿子-平台识别码 去掉尾缀 -1、-2、-3、-4、-5、-6、-7、-8
+# SKU、SKU-站点识别码、SKU-平台识别码 去掉尾缀 -1、-2、-3、-4、-5、-6、-7、-8
 main_df['SKU'] = main_df['SKU'].apply(
     lambda x: re.sub(r'(-1|-2|-3|-4|-5|-6|-7|-8)$', '', x) if re.search(r'(-1|-2|-3|-4|-5|-6|-7|-8)$', x) else x)
-main_df['儿子-站点识别码'] = main_df['儿子-站点识别码'].apply(
+main_df['SKU-站点识别码'] = main_df['SKU-站点识别码'].apply(
     lambda x: re.sub(r'(-1|-2|-3|-4|-5|-6|-7|-8)$', '', x) if re.search(r'(-1|-2|-3|-4|-5|-6|-7|-8)$', x) else x)
-main_df['儿子-平台识别码'] = main_df['儿子-平台识别码'].apply(
+main_df['SKU-平台识别码'] = main_df['SKU-平台识别码'].apply(
     lambda x: re.sub(r'(-1|-2|-3|-4|-5|-6|-7|-8)$', '', x) if re.search(r'(-1|-2|-3|-4|-5|-6|-7|-8)$', x) else x)
 
-# 按照 '儿子-站点识别码' 列进行分组，汇总
-main_df_1 = main_df.groupby('儿子-站点识别码').agg({
+if '分销' not in main_df.columns:
+    main_df['分销'] = '否'
+else:
+    main_df['分销'] = main_df['分销'].fillna('否')
+
+# 按照 'SKU-站点识别码' 列进行分组，汇总
+main_df_1 = main_df.groupby('SKU-站点识别码').agg({
     'SKU': 'first',  # 保留每组的第一行数据
     '站点': 'first',  # 保留每组的第一行数据
     '平台': 'first',  # 保留每组的第一行数据
-    '儿子-平台识别码': 'first',  # 保留每组的第一行数据
+    'SKU-平台识别码': 'first',  # 保留每组的第一行数据
+    '分销': lambda x: '是' if (x == '是').any() else '否',
     '退款数量': 'sum',
     '退款额': 'sum',
     '销售退款金额VAT-amazon': 'sum',

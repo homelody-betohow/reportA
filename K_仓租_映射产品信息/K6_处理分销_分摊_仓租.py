@@ -1,3 +1,17 @@
+"""
+K6_处理分销_分摊_仓租 — 分销口径收尾 + 无平台仓租分摊（17→18）
+
+【流水线位置】
+  上游：(已完成-17)订单统计（K5；月报时 MANO 仓租已由 C2 写入「FBA仓租费」）
+  下游：(已完成-18)订单统计 → 毛利等后续脚本
+
+【核心处理】
+  1. 分销收尾：智慧谷采购成本置 0；分销行运营模式/分类、头程关税派送费
+  2. 将「所有仓库-无平台-需要分摊的费用」总额，平均摊到参与行 →「仓租分摊」
+  3. 海外仓仓租费 = 原-海外仓仓租费 + 仓租分摊；仓租合计 = FBA仓租费 + 海外仓仓租费
+
+"""
+
 import numpy as np
 import pandas as pd
 import importlib.util
@@ -16,8 +30,8 @@ from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-17)订单统计-{shared_date}.xlsx"
 main_file_df = pd.read_excel(main_file_path)
 
-# 如果供应商是“易速”或“智慧谷”，则将“产品状态”、“二级分类”、“三级分类”替换为 “分销”
-main_file_df.loc[main_file_df['供应商'].isin(['易速', '智慧谷']), ['产品状态', '二级分类', '三级分类']] = '分销'
+# 注意：供应商→分销 的规则已在 K5 执行；此处不再重复覆盖产品状态/分类，
+# 以免覆盖你在 (已完成-17) 中手动修正的 保留品/新品 等状态。
 # 如果供应商是“智慧谷”，则将“采购成本”、“订单采购成本”、“重发采购成本”、“二次上架采购成本”替换为 0
 main_file_df.loc[
     main_file_df['供应商'] == '智慧谷', ['采购成本', '订单采购成本', '重发采购成本', '二次上架采购成本']] = 0
@@ -27,25 +41,35 @@ main_file_df.loc[main_file_df['产品状态'] == '分销', ['运营模式', '二
 main_file_df.loc[main_file_df['产品状态'] == '分销', ['头程', '关税', '派送费']] = 0
 
 # 分摊-仓租
+# 参与分摊：非分销；
+_participate = main_file_df['产品状态'] != '分销'
+# 月报时再排除 MANO-EU（其海外仓仓租已由 ManoRent 统计）
+# if folder_name == '月报':
+#     _mano_eu = main_file_df['平台'].astype(str).str.strip() == 'MANO-EU'
+#     _participate = _participate & ~_mano_eu
+#     print(f'[月报] 忽略 MANO-EU 无平台仓租分摊：排除 {_mano_eu.sum()} 行（MANO 仓租已在 FBA仓租费）')
+
 # 1. 计算需要分摊的总费用
 total_cost = main_file_df['所有仓库-无平台-需要分摊的费用'].sum()
-# 2. 筛选参与分摊的行      选择 产品状态 不等于 分销  的行
-participating_rows = main_file_df[main_file_df['产品状态'] != '分销']
+# 2. 筛选参与分摊的行
+participating_rows = main_file_df[_participate]
 # 3. 计算分摊值
-num_participating = len(participating_rows)  # '产品状态' != '分销'的，总的行数
+num_participating = len(participating_rows)
 if num_participating > 0:
     allocation_per_row = total_cost / num_participating
 else:
     allocation_per_row = 0.0
 # 4. 创建新列“仓租分摊”
 main_file_df['仓租分摊'] = 0.0  # 初始化新列为0
-main_file_df.loc[main_file_df['产品状态'] != '分销', '仓租分摊'] = allocation_per_row
+main_file_df.loc[_participate, '仓租分摊'] = allocation_per_row
 # 重命名
 main_file_df = main_file_df.rename(columns={'海外仓仓租费': '原-海外仓仓租费'})
 main_file_df['海外仓仓租费'] = np.round(main_file_df['原-海外仓仓租费'] + main_file_df['仓租分摊'], 2)
 
-# 空值的地方——补 0   使 仓租合计  可以正常合计
-main_file_df = main_file_df.fillna(0)
+# 空值的地方——补 0   使 仓租合计  可以正常合计；平台、平台商品ID识别码 不补 0
+_exclude_fill0 = {'平台', '平台商品ID识别码'}
+_fill0_cols = [c for c in main_file_df.columns if c not in _exclude_fill0]
+main_file_df[_fill0_cols] = main_file_df[_fill0_cols].fillna(0)
 
 main_file_df['仓租合计'] = np.round(main_file_df['FBA仓租费'] + main_file_df['海外仓仓租费'], 2)
 

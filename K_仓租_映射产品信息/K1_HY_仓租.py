@@ -12,6 +12,8 @@ _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
 from A_报表.Z_method.sku_映射 import sku_mappings
+from A_报表.Z_method.cang_zu_site import map_platform_to_site
+from A_报表.Z_method.platform_shop import map_region_to_platform
 from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name, ku_cun_date
 from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 
@@ -92,16 +94,8 @@ hy_no_site_fen_tan = hy_all_cang_zu - hy_have_site_cang_zu
 result_DF.loc[:, '无平台-需要分摊的费用'] = None  # 使用 .loc 来确保修改原始 DataFrame
 # 在第一行的 新建一列写入数据
 result_DF.at[0, '无平台-需要分摊的费用'] = hy_no_site_fen_tan
-# 映射 站点
-product_map_sku_path = fr'{DESKTOP_ROOT}\仓租-站点映射.xlsx'  # 改成对应的映射表
-result_DF_1 = sku_mappings(
-    main_df=result_DF,
-    main_sku='平台',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="平台",
-    map_new_sku="站点",
-    map_sku_sheet='Sheet1'
-)
+# 映射 站点（原桌面「仓租-站点映射.xlsx」→ cang_zu_site.PLATFORM_TO_SITE）
+result_DF_1 = map_platform_to_site(result_DF, platform_col='平台')
 # 在 映射站点 后插入新列 站点商品ID识别码
 new_column_name = "站点商品ID识别码"  # 新列名
 new_column_data = result_DF_1["映射站点"] + result_DF_1["商品ID"]  # 新列数据
@@ -109,16 +103,8 @@ target_column = "映射站点"  # 目标列名（在其后插入）
 insert_position = result_DF_1.columns.get_loc(target_column) + 1  # 计算插入位置
 result_DF_1.insert(insert_position, new_column_name, new_column_data)  # 插入新列
 
-# 映射 平台 （原表的 平台列 里面有站点！）
-product_map_sku_path = fr'{DESKTOP_ROOT}\站点-匹配表.xlsx'  # 改成对应的映射表
-result_DF_1 = sku_mappings(
-    main_df=result_DF_1,
-    main_sku='平台',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="站点",
-    map_new_sku="平台",
-    map_sku_sheet='站点匹配'
-)
+# 映射 平台 （原表的 平台列 里面有站点！数据源：platform_shop）
+result_DF_1 = map_region_to_platform(result_DF_1, site_col='平台')
 # 重命名
 result_DF_1 = result_DF_1.rename(columns={'平台': '原-平台'})
 result_DF_1 = result_DF_1.rename(columns={'映射平台': '平台'})

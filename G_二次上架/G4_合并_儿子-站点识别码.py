@@ -23,8 +23,8 @@ main_df['返还采购成本'] = np.where(
     0
 )
 
-# 按照 '儿子-站点识别码' 列进行分组，并对 '数量' 和 '退件费用(EUR)' 列进行汇总
-result_df = main_df.groupby('儿子-站点识别码').agg({
+# 按照 'SKU-站点识别码' 列进行分组，并对 '数量' 和 '退件费用(EUR)' 列进行汇总
+result_df = main_df.groupby('SKU-站点识别码').agg({
     '实收数量': 'sum',  # 汇总 数量
     '退件费用(EUR)': 'sum',  # 汇总 退件费用
     '二次上架采购成本（RMB）': 'sum',  # 汇总 二次上架采购成本
@@ -32,7 +32,7 @@ result_df = main_df.groupby('儿子-站点识别码').agg({
     'SKU': 'first',  # 保留每组的第一行数据
     '站点': 'first',  # 保留每组的第一行数据
     '平台': 'first',  # 保留每组的第一行数据
-    '儿子-平台识别码': 'first'  # 保留每组的第一行数据
+    'SKU-平台识别码': 'first'  # 保留每组的第一行数据
 }).reset_index()
 # 重命名
 result_df = result_df.rename(columns={'实收数量': '二次上架数量'})
@@ -44,7 +44,7 @@ result_df['二次上架采购成本'] = np.round(result_df['二次上架采购�
 result_df['返还采购成本'] = np.round(result_df['返还采购成本'], 2)
 
 result_df = result_df[
-    ['SKU', '站点', '平台', '儿子-站点识别码', '儿子-平台识别码', '二次上架数量', '二次上架金额', '二次上架采购成本', '返还采购成本']]
+    ['SKU', '站点', '平台', 'SKU-站点识别码', 'SKU-平台识别码', '二次上架数量', '二次上架金额', '二次上架采购成本', '返还采购成本']]
 
 # 输出文件路径
 output_file_path = main_file_path.replace('(已完成-2)', '(处理完成)')

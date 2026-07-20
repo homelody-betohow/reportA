@@ -12,11 +12,11 @@ from A_报表.A0_设置_时间段.A0_paths import SELLERSKU_PROFIT_FILE_NAME, SE
 
 main_file_path = fr"{SELLERSKU_PROFIT_REPORT_DIR}\(退款-1){SELLERSKU_PROFIT_FILE_NAME}"
 main_file_df = pd.read_excel(main_file_path)
-main_file_df_1 = main_file_df.groupby('儿子-站点识别码').agg({
+main_file_df_1 = main_file_df.groupby('SKU-站点识别码').agg({
     'SKU': 'first',  # 保留每组的第一行数据
     '映射站点': 'first',  # 保留每组的第一行数据
     '映射平台': 'first',  # 保留每组的第一行数据
-    '儿子-平台识别码': 'first',  # 保留每组的第一行数据
+    'SKU-平台识别码': 'first',  # 保留每组的第一行数据
     '退款量': 'sum',
     '退款额': 'sum',
     '销售退款金额VAT-amazon': 'sum',

@@ -15,7 +15,7 @@ from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-6)订单统计-{shared_date}.xlsx"
 main_file_df = pd.read_excel(main_file_path)
 # 指定列名（需要筛选的列和需要提取的列）
-columns_to_extract = ['SKU', '站点', '儿子-站点识别码', '销量']  # 替换为你需要提取的列名
+columns_to_extract = ['SKU', '站点', 'SKU-站点识别码', '销量']  # 替换为你需要提取的列名
 
 # TODO 文件路径！！！
 file_path = fr'{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\DLZ\(处理完成)DLZ-总的-广告数据.xlsx'

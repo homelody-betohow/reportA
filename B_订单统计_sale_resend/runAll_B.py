@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+
 from pathlib import Path
 
 _epr_file = next(
@@ -147,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{Color.YELLOW}  2. 筛选「派送费-映射分类」列，找到包含 'MF' 的所有行{Color.RESET}")
                 print(f"{Color.YELLOW}  3. 检查这些行的「MF-派送费」列是否有空值{Color.RESET}")
                 print(f"{Color.YELLOW}  4. 注意查看「仓库SKU销量」，确认数量合理{Color.RESET}")
+                print(f"{Color.GREEN} \n「单个-MF-派送费」 =VLOOKUP(G列,'[手动-二次映射.xlsx]MF-派送费'!$A:$B,2,FALSE) {Color.RESET}")
                 print(f"\n{Color.YELLOW}【如果发现空值】{Color.RESET}")
                 print(f"{Color.YELLOW}  - 找王园芳补充基础表：桌面\\MANO-MF 尾程.xlsx{Color.RESET}")
                 print(f"{Color.YELLOW}  - COMMF 和 OHPAMF 是一样的，需要同时补充{Color.RESET}")

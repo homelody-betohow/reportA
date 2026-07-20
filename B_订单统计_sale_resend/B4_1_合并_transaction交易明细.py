@@ -17,6 +17,31 @@ from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
+# transaction 导出表头行（新格式前 3 行为筛选条件，第 4 行为列名）
+_TRANSACTION_HEADER_KEYS = frozenset({"order id", "seller sku", "fba fees"})
+
+
+def _find_transaction_header_row(xlsx_path, max_scan=12):
+    """定位 transaction 表头行（兼容新旧 ERP 导出：header=0 或 header=3）。"""
+    preview = pd.read_excel(xlsx_path, header=None, nrows=max_scan, engine="openpyxl")
+    for i in range(len(preview)):
+        row_vals = {
+            str(v).replace("\n", " ").strip()
+            for v in preview.iloc[i]
+            if pd.notna(v) and str(v).strip()
+        }
+        if _TRANSACTION_HEADER_KEYS.issubset(row_vals):
+            return i
+    return 0
+
+
+def _read_transaction_excel(xlsx_path):
+    header_row = _find_transaction_header_row(xlsx_path)
+    df = pd.read_excel(xlsx_path, header=header_row, engine="openpyxl")
+    df.columns = [("" if c is None else str(c)).replace("\n", " ").strip() for c in df.columns]
+    return df.dropna(how="all")
+
+
 # 定义 sku 提取规则
 def extract_values(s):
     if pd.isna(s):  # 检查是否为 NaN
@@ -30,8 +55,8 @@ print(f'{transaction_date}')
 # 读取两个文件
 transaction_path_1 = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\transaction交易明细\transaction交易明细-已发放订单{transaction_date}.xlsx"
 transaction_path_2 = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\transaction交易明细\transaction交易明细-已推迟订单{transaction_date}.xlsx"
-transaction_df_1 = pd.read_excel(transaction_path_1)
-transaction_df_2 = pd.read_excel(transaction_path_2)
+transaction_df_1 = _read_transaction_excel(transaction_path_1)
+transaction_df_2 = _read_transaction_excel(transaction_path_2)
 
 # 合并（纵向拼接）
 merged_df = pd.concat([transaction_df_1, transaction_df_2], ignore_index=True)

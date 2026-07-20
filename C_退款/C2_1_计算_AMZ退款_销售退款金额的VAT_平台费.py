@@ -14,9 +14,8 @@ _epr_mod.bootstrap(__file__)
 import numpy as np
 import pandas as pd
 from A_报表.Z_method.style import Color
-from A_报表.Z_method.sku_映射 import sku_mappings
+from A_报表.Z_method.platform_shop import map_shop_platform_region, map_site_vat_commission
 from A_报表.A0_设置_时间段.A0_paths import (
-    DESKTOP_ROOT,
     SELLERSKU_PROFIT_FILE_NAME,
     SELLERSKU_PROFIT_REPORT_DIR,
 )
@@ -67,29 +66,13 @@ for old, new in replacements.items():
     mask = main_file_df['SKU'].str.contains(old, na=False)
     main_file_df.loc[mask, 'SKU'] = new
 
-product_map_sku_path = fr"{DESKTOP_ROOT}\站点-匹配表.xlsx"  # 改成对应的映射表
-# 映射 站点
-main_file_df_1 = sku_mappings(
-    main_df=main_file_df,
-    main_sku='店铺',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="平台账号",
-    map_new_sku="站点",
-    map_sku_sheet='站点匹配'
-)
+# 映射站点 / 映射平台（数据源：platform_shop；有「站点」列时优先店铺-站点精确匹配）
+_site_col = '站点' if '站点' in main_file_df.columns else None
+main_file_df_2 = map_shop_platform_region(main_file_df, shop_col='店铺', site_col=_site_col)
 
-# 映射 平台
-main_file_df_2 = sku_mappings(
-    main_df=main_file_df_1,
-    main_sku='映射站点',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="站点",
-    map_new_sku="平台",
-    map_sku_sheet='站点匹配'
-)
 # 构建识别码
-main_file_df_2['儿子-站点识别码'] = main_file_df_2['映射站点'] + main_file_df_2['SKU']
-main_file_df_2['儿子-平台识别码'] = main_file_df_2['映射平台'] + main_file_df_2['SKU']
+main_file_df_2['SKU-站点识别码'] = main_file_df_2['映射站点'] + main_file_df_2['SKU']
+main_file_df_2['SKU-平台识别码'] = main_file_df_2['映射平台'] + main_file_df_2['SKU']
 
 main_file_df_2['退款额'] = main_file_df_2['销售退款金额'] + main_file_df_2['退款服务费用']
 # 保留2位小数
@@ -101,26 +84,20 @@ main_file_df_2['退款额'] = main_file_df_2['退款额'].apply(
 # 筛选 退款量 列和 退款额 列均不等于 0 的行
 main_file_df_2 = main_file_df_2[(main_file_df_2['退款量'] != 0) & (main_file_df_2['退款额'] != 0)]
 # 保留指定列
+# 新版 SellerSku 报表已无「历史ASIN」列，仅保留现有 ASIN
 main_file_df_3 = main_file_df_2[
-    ['sellerSku', 'ASIN', '历史ASIN', '产品信息', 'SKU', '店铺', '映射站点', '映射平台', '儿子-站点识别码',
-     '儿子-平台识别码', '退款服务费用', '销售退款金额', '退款额', '退款量']]
+    ['sellerSku', 'ASIN', '产品信息', 'SKU', '店铺', '映射站点', '映射平台', 'SKU-站点识别码',
+     'SKU-平台识别码', '退款服务费用', '销售退款金额', '退款额', '退款量']]
 # 不要 sellerSku  为空 的数据
 main_file_df_3 = main_file_df_3.dropna(subset=['sellerSku'])
 
 # TODO 计算Amazon 的 销售退款金额VAT(不计算'退款服务费用')
-# 筛选“平台”列中包含“amazon”的行
-product_map_sku_path = fr"{DESKTOP_ROOT}\VAT、平台费-映射.xlsx"
-# 映射 VAT税
-main_file_df_4 = sku_mappings(
-    main_df=main_file_df_3,
-    main_sku='映射站点',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="站点",
-    map_new_sku="VAT税",
-    map_sku_sheet='VAT税、佣金'
-)
+# 映射 VAT税（DB 优先，Excel 兜底），按 映射站点 匹配 platform_shop.market_region
+main_file_df_4 = map_site_vat_commission(main_df=main_file_df_3, site_col='映射站点')
 # 计算VAT
 main_file_df_4['销售退款金额VAT-amazon'] = main_file_df_4['销售退款金额'] * main_file_df_4['映射VAT税']
+#
+# ========================================================================================
 # 筛选：店铺 不包含 'BinFen'，对应‘销售退款金额VAT-amazon’列的数据替换成0
 condition = ~main_file_df_4['店铺'].str.contains('BinFen')
 main_file_df_4.loc[condition, '销售退款金额VAT-amazon'] = 0

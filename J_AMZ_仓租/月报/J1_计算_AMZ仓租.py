@@ -10,6 +10,7 @@ _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
 from A_报表.Z_method.sku_映射 import sku_mappings
+from A_报表.Z_method.platform_shop import map_shop_platform_region
 from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name, fba_date
 from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 
@@ -50,40 +51,22 @@ main_file_df_1 = sku_mappings(
 )
 main_file_df_1 = main_file_df_1.rename(columns={'映射商品ID': '商品ID'})
 
-# 映射 站点
-product_map_sku_path = fr"{DESKTOP_ROOT}\站点-匹配表.xlsx"
-main_file_df_2 = sku_mappings(
-    main_df=main_file_df_1,
-    main_sku='店铺',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="平台账号",
-    map_new_sku="站点",
-map_sku_sheet='站点匹配'
-)
+# 映射站点 / 映射平台（数据源：platform_shop）
+main_file_df_3 = map_shop_platform_region(main_file_df_1, shop_col='店铺', site_col=None)
 
 # 在 映射站点 后插入新列 站点商品ID识别码
-new_column_name = "站点商品ID识别码"  # 新列名
-new_column_data = main_file_df_2["映射站点"] + main_file_df_2["商品ID"]  # 新列数据
-target_column = "映射站点"  # 目标列名（在其后插入）
-insert_position = main_file_df_2.columns.get_loc(target_column) + 1  # 计算插入位置
-main_file_df_2.insert(insert_position, new_column_name, new_column_data)  # 插入新列
+new_column_name = "站点商品ID识别码"
+new_column_data = main_file_df_3["映射站点"] + main_file_df_3["商品ID"]
+target_column = "映射站点"
+insert_position = main_file_df_3.columns.get_loc(target_column) + 1
+main_file_df_3.insert(insert_position, new_column_name, new_column_data)
 
-# 映射 平台
-product_map_sku_path = fr"{DESKTOP_ROOT}\站点-匹配表.xlsx"  # 改成对应的映射表
-main_file_df_3 = sku_mappings(
-    main_df=main_file_df_2,
-    main_sku='映射站点',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="站点",
-    map_new_sku="平台",
-map_sku_sheet='站点匹配'
-)
 # 在 站点商品ID识别码后插入 平台商品ID识别码
-new_column_name = "平台商品ID识别码"  # 新列名
-new_column_data = main_file_df_3["映射平台"] + main_file_df_3["商品ID"]  # 新列数据
-target_column = "站点商品ID识别码"  # 目标列名（在其后插入）
-insert_position = main_file_df_3.columns.get_loc(target_column) + 1  # 计算插入位置
-main_file_df_3.insert(insert_position, new_column_name, new_column_data)  # 插入新列
+new_column_name = "平台商品ID识别码"
+new_column_data = main_file_df_3["映射平台"] + main_file_df_3["商品ID"]
+target_column = "站点商品ID识别码"
+insert_position = main_file_df_3.columns.get_loc(target_column) + 1
+main_file_df_3.insert(insert_position, new_column_name, new_column_data)
 
 # 得到上月的  FBA仓租费
 main_file_df_3['FBA仓租费'] = main_file_df_3['仓储费用（已分摊）'] + main_file_df_3['长期仓储费（已分摊）']

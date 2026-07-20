@@ -27,7 +27,9 @@ mask = (main_df['派送运费'] == 0) & (main_df['fba费用'] == 0) & (main_df['
 main_df_map = main_df[mask].copy()
 # 不需要映射的部分（至少有一个费用不等于0）
 main_df_not_map = main_df[~mask].copy()
-product_map_sku_path = r"\\Betohow\数据报表\2-定价表\欧洲平台定价表 2026.05.09.xlsx"
+product_map_sku_dir = r"\\Betohow\数据报表\2-定价表"
+product_map_sku_file = "欧洲平台定价表 2026.0708.xlsx"
+product_map_sku_path = f"{product_map_sku_dir}\{product_map_sku_file}"
 # 获取表头，转换为list，并处理NaN值
 header_list = pd.read_excel(product_map_sku_path, sheet_name='基础表').iloc[1].fillna('').tolist()  # 将NaN转为空字符串
 print(f'定价表的表头:{header_list}')
@@ -117,13 +119,26 @@ fee_cols = [
     '映射transaction-FBA-派送运费',
     '映射-定价派送费'
 ]
+# 统一把费用列清洗为数值（避免出现 "float + str"）
+def _to_num(s: pd.Series) -> pd.Series:
+    if s is None:
+        return s
+    # 兼容：空字符串、带逗号的数字、混合类型
+    return pd.to_numeric(
+        s.astype(str).str.replace(",", "", regex=False).replace({"": np.nan, "nan": np.nan, "None": np.nan}),
+        errors="coerce",
+    )
+
+for _c in [*fee_cols, "MF-派送费"]:
+    if _c in main_df_1.columns:
+        main_df_1[_c] = _to_num(main_df_1[_c])
 # 条件判断：派送费-映射分类 是否以 MF 开头
 mask = main_df_1['派送费-映射分类'].astype(str).str.startswith('MF', na=False)
 # 根据条件计算派送运费
 main_df_1['派送运费'] = np.where(
     mask,
     main_df_1['MF-派送费'],  # MF开头：直接用 MF-派送费
-    main_df_1[fee_cols].sum(axis=1)  # 其他情况：四列相加
+    main_df_1[fee_cols].sum(axis=1, numeric_only=True)  # 其他情况：四列相加
 )
 # 把等于0的值替换为 NaN
 main_df_1['派送运费'] = main_df_1['派送运费'].replace(0, np.nan)
@@ -136,5 +151,10 @@ main_df_1.to_excel(output_path, index=False)
 print(f'处理完成，output_path：{output_path}')
 print(f'{Color.YELLOW}~~~~~~~~~~~~~~~~~请检查，派送运费，是否有空的，分销的派送运费 为 0 ！！！{Color.RESET}')
 print(r'~~~~~~~~~~~~~~~~~有空的话，去看看"欧洲平台定价表"，是否没及时更新，path：\\Betohow\数据报表\2-定价表')
-print(f'{Color.YELLOW}~~~~~~~~~~~~~~~~~~HY-AT、HY-PT 有空的话，自己去用公式计算[二次映射表-派送费-HY-PT、HY-AT]（注意"仓库SKU销量"的数量){Color.RESET}')
+print('================================================================================"')
+print(f"{Color.GREEN} FBA-DE =VLOOKUP(R列,'[{product_map_sku_file}]基础表'!$B:$AF,30,FALSE){Color.RESET}")
+print(f"{Color.GREEN} FBA-FR =VLOOKUP(R列,'[{product_map_sku_file}]基础表'!$B:$AF,31,FALSE){Color.RESET}")
+print(f"{Color.GREEN} HY-AT，HY-PT =VLOOKUP(R列,'[手动-二次映射.xlsx]派送费-HY-PT、HY-AT'!$A:$C,3,FALSE){Color.RESET}")
+print('================================================================================"')
+print(f'{Color.YELLOW}~~~（注意"仓库SKU销量"的数量）~~~~~{Color.RESET}')
 print('~~~~~~~~~~~~~~~~~"欧洲平台定价表"没有的话，联系：李杨，更新定价表的数据')

@@ -13,7 +13,7 @@ from A_报表.Z_method.time import get_month_range
 
 # 汇率 别的币种 转 EUR
 RMB_di_EUR = 7.3  # 人民币转欧元(除法)
-USD_to_EUR = 0.858  # 美元
+USD_to_EUR = 0.860  # 美元
 kc_to_EUR = 0.04133  # 捷克克朗
 zl_to_EUR = 0.237  # 波兰兹罗提
 Ft_to_EUR = 0.002611  # 匈牙利福林
@@ -21,12 +21,12 @@ CAD_to_EUR = 0.6179  # 加拿大元
 kr_to_EUR = 0.0934  # 瑞典克朗
 Lei_to_EUR = 0.196  # 罗马尼亚列伊
 
-RATE_SHIP_FEE = 1.05  # 运费费率
+RATE_SHIP_FEE = 1.06  # 运费费率
 SKU_NW_DISCOUNT = 0.8  # NW尾缀SKU 折扣
 
 # 切换报表类型：'日报' | '月报'
-# folder_name = '月报'
-folder_name = '日报'
+folder_name = '月报'
+# folder_name = '日报'
 
 _VALID_FOLDER_NAMES = ('日报', '月报')
 # 日报 获取多少天前的数据
@@ -91,7 +91,7 @@ test_end_date = f"{report_date.year}-{report_date.month}-{report_date.day}"
 
 # TODO 目标拆解表，用于 映射 Amazon的销售负责人（手动改，一月改一次）
 # 文件目录见 A0_paths.MONTH_GOAL_DIR（当前：F:\月目标拆解及跟进）
-month_goal_excel = '2026-06月目标拆解及跟进.xlsx'
+month_goal_excel = '2026.07月目标拆解及跟进.xlsx'
 
 # 获取 transaction文件命名的日期
 today = datetime.today()

@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 import importlib.util
+import openpyxl
+from openpyxl.styles import Alignment
 from pathlib import Path
 # 须在 import A_报表 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
 _epr_file = next(p / "ensure_project_root.py" for p in Path(__file__).resolve().parents if (p / "ensure_project_root.py").is_file())
@@ -37,8 +39,8 @@ main_file_df["订单类型"] = main_file_df["订单类型"].replace("线下订�
 main_file_df["订单类型"] = main_file_df["订单类型"].replace("重发订单", "resend")
 main_file_df["订单类型"] = main_file_df["订单类型"].replace("FBA换货单", "resend")
 
-# 获取“儿子-站点识别码”的所有唯一值（自动去重）
-col1_conditions = main_file_df["儿子-站点识别码"].dropna().unique().tolist()  # 条件
+# 获取“SKU-站点识别码”的所有唯一值（自动去重）
+col1_conditions = main_file_df["SKU-站点识别码"].dropna().unique().tolist()  # 条件
 
 # 当仓库属性 == 第三方 时，派送费需乘以费率
 print(f"{Color.GREEN}\n 第三方仓库尾程派送系数：{RATE_SHIP_FEE}{Color.RESET}")
@@ -46,14 +48,13 @@ third_party_mask = main_file_df['仓库属性'] == '第三方'
 main_file_df.loc[third_party_mask, '派送运费'] = main_file_df.loc[third_party_mask, '派送运费'] * RATE_SHIP_FEE
 
 output_path = main_file_path.replace('已完成-5-1', '已完成-6')
-writer = pd.ExcelWriter(output_path, engine='openpyxl')
 
 # 创建空DataFrame存储所有结果
 final_results_df = pd.DataFrame()
-# 主循环：按“儿子-站点识别码”列的所有值循环
+# 主循环：按“SKU-站点识别码”列的所有值循环
 for status in col1_conditions:
-    # 第一次筛选：当前儿子-站点识别码的数据
-    temp_main_file_df = main_file_df[main_file_df["儿子-站点识别码"] == status]
+    # 第一次筛选：当前SKU-站点识别码的数据
+    temp_main_file_df = main_file_df[main_file_df["SKU-站点识别码"] == status]
     # 初始化一个字典，用于存储每种订单类型的销量总和
     order_type_counts = {category: 0 for category in main_file_df["订单类型"].unique()}
     # 初始化总和变量
@@ -76,14 +77,14 @@ for status in col1_conditions:
         # 记录当前订单类型的销量总和
         order_type_counts[category] = filtered_main_file_df["仓库SKU销量"].sum()
     # 获取第一行的某些列数据（如“ID”和“Name”）
-    first_row_data = temp_main_file_df.iloc[0][["平台", "站点", "儿子-平台识别码", "SKU", "儿子-站点识别码"]]
+    first_row_data = temp_main_file_df.iloc[0][["平台", "站点", "SKU-平台识别码", "SKU", "SKU-站点识别码"]]
     # 创建当前条件的临时结果DataFrame
     temp_result = pd.DataFrame({
         "SKU": [first_row_data["SKU"]],
         "站点": [first_row_data["站点"]],
         "平台": [first_row_data["平台"]],
-        "儿子-站点识别码": [first_row_data["儿子-站点识别码"]],
-        "儿子-平台识别码": [first_row_data["儿子-平台识别码"]],
+        "SKU-站点识别码": [first_row_data["SKU-站点识别码"]],
+        "SKU-平台识别码": [first_row_data["SKU-平台识别码"]],
         "平台销售额": [sum_1],
         "头程": [sum_2],
         "关税": [sum_3],
@@ -123,20 +124,67 @@ final_results_df_1 = sku_mappings(
 # 将字符串转换为数值类型（空字符串或非数字字符串会转换为 NaN）
 final_results_df_1['映射原始采购价'] = pd.to_numeric(final_results_df_1['映射原始采购价'], errors='coerce')
 
+# 非分销仓：原逻辑（销量/重发数量 × 映射原始采购价）
 final_results_df_1['订单采购成本'] = np.round(final_results_df_1['销量'] * final_results_df_1['映射原始采购价'], 2)
 final_results_df_1['重发采购成本'] = np.round(final_results_df_1['重发数量'] * final_results_df_1['映射原始采购价'], 2)
 
-# 2026-06-05 调整：SKU以 -NW 结尾的，订单采购成本&重发采购成本 打折
-nw_suffix_mask = final_results_df_1['SKU'].astype(str).str.endswith('-NW')
-final_results_df_1.loc[nw_suffix_mask, '订单采购成本'] = final_results_df_1.loc[nw_suffix_mask, '订单采购成本'] * SKU_NW_DISCOUNT
-final_results_df_1.loc[nw_suffix_mask, '重发采购成本'] = final_results_df_1.loc[nw_suffix_mask, '重发采购成本'] * SKU_NW_DISCOUNT
-print(f"{Color.YELLOW}2026-06-05 调整：SKU以 -NW 结尾的，订单采购成本&重发采购成本 打折：{SKU_NW_DISCOUNT}{Color.RESET} \n")
+# 分销仓：映射原始采购价=1，订单/重发采购成本=0
+fenxiao_cang_mask = main_file_df['仓库'].astype(str).str.contains('分销仓', na=False)
+if fenxiao_cang_mask.any():
+    fenxiao_ids = set(main_file_df.loc[fenxiao_cang_mask, 'SKU-站点识别码'])
+    is_fenxiao_group = final_results_df_1['SKU-站点识别码'].isin(fenxiao_ids)
+
+    non_fx_sale_qty = (
+        main_file_df.loc[~fenxiao_cang_mask & (main_file_df['订单类型'] == 'sale')]
+        .groupby('SKU-站点识别码')['仓库SKU销量']
+        .sum()
+    )
+    non_fx_resend_qty = (
+        main_file_df.loc[~fenxiao_cang_mask & (main_file_df['订单类型'] == 'resend')]
+        .groupby('SKU-站点识别码')['仓库SKU销量']
+        .sum()
+    )
+    sale_for_cost = final_results_df_1['SKU-站点识别码'].map(non_fx_sale_qty).fillna(0)
+    resend_for_cost = final_results_df_1['SKU-站点识别码'].map(non_fx_resend_qty).fillna(0)
+    has_non_fx_qty = (sale_for_cost + resend_for_cost) > 0
+
+    # 仅有分销仓销量
+    only_fenxiao = is_fenxiao_group & ~has_non_fx_qty
+    final_results_df_1.loc[only_fenxiao, '映射原始采购价'] = 1
+    final_results_df_1.loc[only_fenxiao, ['订单采购成本', '重发采购成本']] = 0
+
+    # 分销仓 + 非分销仓混合：非分销仓部分仍按原逻辑
+    mixed = is_fenxiao_group & has_non_fx_qty
+    final_results_df_1.loc[mixed, '订单采购成本'] = np.round(
+        sale_for_cost[mixed] * final_results_df_1.loc[mixed, '映射原始采购价'], 2
+    )
+    final_results_df_1.loc[mixed, '重发采购成本'] = np.round(
+        resend_for_cost[mixed] * final_results_df_1.loc[mixed, '映射原始采购价'], 2
+    )
+
+    print(f"{Color.GREEN}分销仓行 {fenxiao_cang_mask.sum()} 行：映射原始采购价=1，订单采购成本、重发采购成本=0{Color.RESET}")
 
 # CD平台的重发采购替换为 0
 final_results_df_1.loc[final_results_df_1['平台'] == 'CD', '重发采购成本'] = 0
 
+# 分销标识：已完成-5-1 中 仓库 含「分销」则标记为「是」，否则留空
+fenxiao_sku_ids = set(
+    main_file_df.loc[main_file_df['仓库'].astype(str).str.contains('分销', na=False), 'SKU-站点识别码']
+)
+final_results_df_1['分销'] = '否'
+final_results_df_1.loc[final_results_df_1['SKU-站点识别码'].isin(fenxiao_sku_ids), '分销'] = '是'
+# 将「分销」列移到最后
+_cols = [c for c in final_results_df_1.columns if c != '分销'] + ['分销']
+final_results_df_1 = final_results_df_1[_cols]
+
 # 保存Excel文件将所有结果写入
-final_results_df_1.to_excel(writer, index=False)
-writer.close()
+with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+    final_results_df_1.to_excel(writer, index=False)
+    worksheet = writer.sheets['Sheet1']
+    fenxiao_col_idx = final_results_df_1.columns.get_loc('分销') + 1
+    fenxiao_col_letter = openpyxl.utils.get_column_letter(fenxiao_col_idx)
+    center_align = Alignment(horizontal='center')
+    for cell in worksheet[fenxiao_col_letter]:
+        cell.alignment = center_align
 print(f'处理完成，文件另存为：{output_path}')
-print(f'{Color.YELLOW}检查：映射原始采购价，是否有空的，空的去查——是否是智慧谷的，25开头的 都是智慧谷的分销，智慧谷的采购成本为0{Color.RESET}')
+# print(f'{Color.YELLOW}检查：映射原始采购价，是否有空的，空的去查——是否是智慧谷的，25开头的 都是智慧谷的分销，智慧谷的采购成本为0{Color.RESET}')

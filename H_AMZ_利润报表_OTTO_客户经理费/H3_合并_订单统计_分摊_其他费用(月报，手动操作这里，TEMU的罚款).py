@@ -49,13 +49,13 @@ if '采购成本' not in main_file_df.columns:
 guang_gao_path = fr"{SELLERSKU_PROFIT_REPORT_DIR}\(处理完成){SELLERSKU_PROFIT_FILE_NAME}"
 guang_gao_df = pd.read_excel(guang_gao_path)
 
-# 以儿子-站点识别码为键进行合并，选择左连接（left join），这样可以确保表1的所有数据都被保留
+# 以SKU-站点识别码为键进行合并，选择左连接（left join），这样可以确保表1的所有数据都被保留
 result_df = pd.merge(main_file_df, guang_gao_df[
-    ['儿子-站点识别码', '广告费(AMZ)', '赔偿金额', '其他分摊费用', 'EU-其他分摊费用-需要分摊的',
-     'US-其他分摊费用-需要分摊的']], on='儿子-站点识别码', how='left')
+    ['SKU-站点识别码', '广告费(AMZ)', '赔偿金额', '其他分摊费用', 'EU-其他分摊费用-需要分摊的',
+     'US-其他分摊费用-需要分摊的']], on='SKU-站点识别码', how='left')
 
 # 找出表2中在表1中不存在的行
-missing_rows = guang_gao_df[~guang_gao_df['儿子-站点识别码'].isin(main_file_df['儿子-站点识别码'])]
+missing_rows = guang_gao_df[~guang_gao_df['SKU-站点识别码'].isin(main_file_df['SKU-站点识别码'])]
 
 # 将这些缺失的行添加到结果中
 result_df = pd.concat([result_df, missing_rows], ignore_index=True)
@@ -73,7 +73,12 @@ result_df[expected_columns] = result_df[expected_columns].fillna(0)
 result_df = result_df[expected_columns]
 
 # 空值的地方——补 0
-result_df = result_df.fillna(0)
+if '分销' not in result_df.columns:
+    result_df['分销'] = '否'
+else:
+    result_df['分销'] = result_df['分销'].replace({0: '否', '0': '否'}).fillna('否')
+_fill_cols = [c for c in result_df.columns if c != '分销']
+result_df[_fill_cols] = result_df[_fill_cols].fillna(0)
 
 # TODO 按照”订单统计“中的 AMAZON-EU、AMAZON-US ‘平台’的 ‘平台销售额‘
 #  去分摊  “利润报表”中的‘EU-其他分摊费用-需要分摊的’、‘US-其他分摊费用-需要分摊的’
@@ -85,8 +90,13 @@ total_eu_alloc = result_df['EU-其他分摊费用-需要分摊的'].sum()
 total_us_alloc = result_df['US-其他分摊费用-需要分摊的'].sum()
 
 # 3. 清空
-result_df['EU-其他分摊费用-需要分摊的'] = 0
-result_df['US-其他分摊费用-需要分摊的'] = 0
+result_df['EU-其他分摊费用-需要分摊的'] = 0.0
+result_df['US-其他分摊费用-需要分摊的'] = 0.0
+
+# 这两列后面要写入小数，确保 dtype 为 float，避免 pandas 的 LossySetitemError
+result_df[['EU-其他分摊费用-需要分摊的', 'US-其他分摊费用-需要分摊的']] = result_df[
+    ['EU-其他分摊费用-需要分摊的', 'US-其他分摊费用-需要分摊的']
+].astype(float)
 
 # 4. EU 分摊：平台 == "AMAZON-EU"
 eu_df = result_df[result_df['平台'] == 'AMAZON-EU'].copy()

@@ -25,20 +25,20 @@ main_file_df['广告费(AMZ)'] = main_file_df['广告费(AMZ)'].apply(
 s = main_file_df['其他分摊费用']
 main_file_df['其他分摊费用'] = pd.to_numeric(s).mul(-1).fillna(s)
 
-# 按照 '儿子-站点识别码' 列进行分组，进行汇总
-main_file_df_1 = main_file_df.groupby('儿子-站点识别码').agg({
+# 按照 'SKU-站点识别码' 列进行分组，进行汇总
+main_file_df_1 = main_file_df.groupby('SKU-站点识别码').agg({
     '广告费(AMZ)': 'sum',
     '赔偿金额': 'sum',
     '其他分摊费用': 'sum',
     'SKU': 'first',  # 保留每组的第一行数据
     '站点': 'first',  # 保留每组的第一行数据
     '平台': 'first',  # 保留每组的第一行数据
-    '儿子-平台识别码': 'first'  # 保留每组的第一行数据
+    'SKU-平台识别码': 'first'  # 保留每组的第一行数据
 }).reset_index()
 
 # 保留目标列
 main_file_df_1 = main_file_df_1[
-    ['SKU', '站点', '平台', '儿子-站点识别码', '儿子-平台识别码', '广告费(AMZ)', '赔偿金额', '其他分摊费用']]
+    ['SKU', '站点', '平台', 'SKU-站点识别码', 'SKU-平台识别码', '广告费(AMZ)', '赔偿金额', '其他分摊费用']]
 
 # 筛选出指定列相加不为 0 的行
 columns_to_check = ['广告费(AMZ)', '赔偿金额', '其他分摊费用']

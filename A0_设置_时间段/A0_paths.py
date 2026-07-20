@@ -1,5 +1,5 @@
 # 网络共享盘路径（版本更新时只改这里）
-BTH_ALL_SKU_DETAIL_PATH = r"\\Betohow\数据报表\数据库\BTH全部SKU明细-v2026.06.02.xlsx"
+BTH_ALL_SKU_DETAIL_PATH = r"\\Betohow\数据报表\数据库\BTH全部SKU明细-v2026.06.29.xlsx"
 
 # 桌面根目录（换电脑或用户名时只改这里）
 DESKTOP_ROOT = r"C:\Users\BTH-windows\Desktop"

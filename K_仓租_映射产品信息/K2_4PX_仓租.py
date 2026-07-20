@@ -10,6 +10,8 @@ _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
 from A_报表.Z_method.sku_映射 import sku_mappings
+from A_报表.Z_method.cang_zu_site import map_platform_to_site
+from A_报表.Z_method.platform_shop import map_region_to_platform
 from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name, ku_cun_date
 from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 from A_报表.Z_method.style import Color
@@ -42,13 +44,13 @@ px4_df = px4_df.rename(columns={'应收金额': '总仓租'})
 px4_df['总仓租'] = px4_df['总仓租']
 px4_all_cang_zu = px4_df['总仓租'].sum()  # HY 总的仓租费用
 
-px4_df = px4_df.rename(columns={'SKU': 'SKU(儿子)'})  # 为了后面的SKU列进行合并
+px4_df = px4_df.rename(columns={'SKU': 'SKU编码'})  # 为了后面的SKU列进行合并
 
 # 映射 商品ID
 product_map_sku_path = r"\\Betohow\数据报表\数据库\产品信息库2025.xlsx"  # 改成对应的映射表
 px4_df_1 = sku_mappings(
     main_df=px4_df,
-    main_sku='SKU(儿子)',
+    main_sku='SKU编码',
     map_sku_path=product_map_sku_path,
     map_old_sku="产品编码",
     map_new_sku="商品ID",
@@ -101,7 +103,7 @@ DF = pd.merge(px4_df_1, ku_cun_filtered_df, on='商品ID', how='left')
 DF['仓租'] = DF['总仓租'] * DF['数量占比']
 
 # 选择需要的列生成新的DataFrame
-result_DF = DF[['SKU(儿子)', '商品ID', '平台', '仓租']].copy()  # 显式创建副本
+result_DF = DF[['SKU编码', '商品ID', '平台', '仓租']].copy()  # 显式创建副本
 
 px4_have_site_cang_zu = result_DF["仓租"].fillna(0).sum()  # 4px 有平台（站点）的仓租
 # 需要分摊没有平台（站点）的仓租
@@ -110,16 +112,8 @@ result_DF["无平台-需要分摊的费用"] = None
 if len(result_DF) > 0:
     result_DF.at[0, "无平台-需要分摊的费用"] = px4_no_site_fen_tan
 
-# 映射 站点
-product_map_sku_path = fr'{DESKTOP_ROOT}\仓租-站点映射.xlsx'  # 改成对应的映射表
-result_DF_1 = sku_mappings(
-    main_df=result_DF,
-    main_sku='平台',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="平台",
-    map_new_sku="站点",
-    map_sku_sheet='Sheet1'
-)
+# 映射 站点（原桌面「仓租-站点映射.xlsx」→ cang_zu_site.PLATFORM_TO_SITE）
+result_DF_1 = map_platform_to_site(result_DF, platform_col='平台')
 # 在 映射站点 后插入新列 站点商品ID识别码
 new_column_name = "站点商品ID识别码"  # 新列名
 new_column_data = result_DF_1["映射站点"] + result_DF_1["商品ID"]  # 新列数据
@@ -127,16 +121,8 @@ target_column = "映射站点"  # 目标列名（在其后插入）
 insert_position = result_DF_1.columns.get_loc(target_column) + 1  # 计算插入位置
 result_DF_1.insert(insert_position, new_column_name, new_column_data)  # 插入新列
 
-# 映射 平台 （原表的 平台列 里面有站点！）
-product_map_sku_path = fr'{DESKTOP_ROOT}\站点-匹配表.xlsx'  # 改成对应的映射表
-result_DF_1 = sku_mappings(
-    main_df=result_DF_1,
-    main_sku='平台',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="站点",
-    map_new_sku="平台",
-    map_sku_sheet='站点匹配'
-)
+# 映射 平台 （原表的 平台列 里面有站点！数据源：platform_shop）
+result_DF_1 = map_region_to_platform(result_DF_1, site_col='平台')
 # 重命名
 result_DF_1 = result_DF_1.rename(columns={'平台': '原-平台'})
 result_DF_1 = result_DF_1.rename(columns={'映射平台': '平台'})
@@ -149,7 +135,7 @@ result_DF_1.insert(insert_position, new_column_name, new_column_data)  # 插入�
 
 result_DF_1 = result_DF_1.rename(columns={'映射站点': '站点'})
 result_DF_1 = result_DF_1.rename(columns={'仓租': '海外仓仓租费'})
-result_DF_1 = result_DF_1.rename(columns={'SKU(儿子)': 'SKU'})
+result_DF_1 = result_DF_1.rename(columns={'SKU编码': 'SKU'})
 # 保存文件
 output_file_path = output_dir + "\\(处理完成)4PX-仓租明细.xlsx"
 result_DF_1.to_excel(output_file_path, index=False)

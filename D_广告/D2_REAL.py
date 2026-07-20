@@ -11,8 +11,9 @@ _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
 from A_报表.Z_method.sku_映射 import sku_mappings
+from A_报表.Z_method.platform_shop import map_region_to_platform
 from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name, kc_to_EUR
-from A_报表.Z_method.split_rows_data_拆分SKU_1个加号_逗号 import split_one_rows_data
+from A_报表.Z_method.split_rows_data_SKU import split_one_rows_data
 from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 
 
@@ -112,31 +113,23 @@ all_real_df_2 = split_one_rows_data(
     value_column='Cost (€)'
 )
 
-# 儿子-站点识别码
-new_column_name = "儿子-站点识别码"  # 新列名
+# SKU-站点识别码
+new_column_name = "SKU-站点识别码"  # 新列名
 new_column_data = all_real_df_2["站点"] + all_real_df_2["SKU"]  # 新列数据
 target_column = "SKU"  # 目标列名（在其后插入）
 insert_position = all_real_df_2.columns.get_loc(target_column) + 1  # 计算插入位置
 all_real_df_2.insert(insert_position, new_column_name, new_column_data)  # 插入新列
-# 映射 平台
-product_map_sku_path = fr"{DESKTOP_ROOT}\站点-匹配表.xlsx"  # 改成对应的映射表
-all_real_df_3 = sku_mappings(
-    main_df=all_real_df_2,
-    main_sku='站点',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="站点",
-    map_new_sku="平台",
-    map_sku_sheet='站点匹配'
-)
-# 在 儿子-站点识别码 后插入 儿子-平台识别码
-new_column_name = "儿子-平台识别码"  # 新列名
+# 映射 平台（数据源：platform_shop）
+all_real_df_3 = map_region_to_platform(all_real_df_2, site_col='站点')
+# 在 SKU-站点识别码 后插入 SKU-平台识别码
+new_column_name = "SKU-平台识别码"  # 新列名
 new_column_data = all_real_df_3["映射平台"] + all_real_df_3["SKU"]  # 新列数据
-target_column = "儿子-站点识别码"  # 目标列名（在其后插入）
+target_column = "SKU-站点识别码"  # 目标列名（在其后插入）
 insert_position = all_real_df_3.columns.get_loc(target_column) + 1  # 计算插入位置
 all_real_df_3.insert(insert_position, new_column_name, new_column_data)  # 插入新列
 # 保存目标列
 all_real_df_4 = all_real_df_3[
-    ['EAN', 'SKU', '站点', '映射平台', '儿子-站点识别码', '儿子-平台识别码', 'Cost (€)']]
+    ['EAN', 'SKU', '站点', '映射平台', 'SKU-站点识别码', 'SKU-平台识别码', 'Cost (€)']]
 # 更改列名，将’Cost (€)‘  改为 ’广告费(非AMZ)‘
 all_real_df_4 = all_real_df_4.rename(columns={'Cost (€)': '广告费(非AMZ)'})
 

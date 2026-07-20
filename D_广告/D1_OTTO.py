@@ -11,8 +11,9 @@ _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
 from A_报表.Z_method.sku_映射 import sku_mappings
+from A_报表.Z_method.platform_shop import map_region_to_platform
 from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name
-from A_报表.Z_method.split_rows_data_拆分SKU_1个加号_逗号 import split_one_rows_data
+from A_报表.Z_method.split_rows_data_SKU import split_one_rows_data
 from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 
 # TODO 文件路径！！！
@@ -52,8 +53,6 @@ with open(otto_file_path, encoding=encoding) as f:
     # columns 参数用于指定 DataFrame 的列名。new_data[0]：new_data 的第一行作为列名
     otto_file_df = pd.DataFrame(new_data[1:], columns=new_data[0])
 
-product_map_sku_path = fr"{DESKTOP_ROOT}\广告-SKU关系对应.xlsx"  # 改成对应的映射表
-
 # 先去除欧元符号和前后空格                     空值，替换成：0
 otto_file_df['Ausgaben'] = otto_file_df['Ausgaben'].apply(
     lambda x: float(x.replace('€', '').replace(',', '.').strip()) if isinstance(x, str) and x.strip() else 0
@@ -66,6 +65,25 @@ otto_file_df = otto_file_df[otto_file_df['Ausgaben'] != 0]
 # 去除 整张表 的前后空格
 for col in otto_file_df.columns:
     otto_file_df[col] = otto_file_df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
+
+# OTTO 源表部分行 SKU 为空，用「广告-SKU关系对应」按货号(Artikelnummer)补仓库SKU
+product_map_sku_path = fr"{DESKTOP_ROOT}\广告-SKU关系对应.xlsx"
+otto_file_df = sku_mappings(
+    main_df=otto_file_df,
+    main_sku='Artikelnummer',
+    map_sku_path=product_map_sku_path,
+    map_old_sku='货号',
+    map_new_sku='仓库SKU',
+    map_sku_sheet='OTTO 货号对应表'
+)
+empty_sku = otto_file_df['SKU'].isna() | (otto_file_df['SKU'].astype(str).str.strip() == '')
+# sku_mappings 未命中时会回填原货号，故仅在映射结果与货号不同时视为命中
+mapped_hit = (
+    otto_file_df['映射仓库SKU'].notna()
+    & (otto_file_df['映射仓库SKU'].astype(str).str.strip()
+       != otto_file_df['Artikelnummer'].astype(str).str.strip())
+)
+otto_file_df.loc[empty_sku & mapped_hit, 'SKU'] = otto_file_df.loc[empty_sku & mapped_hit, '映射仓库SKU']
 
 #  拆分有“+”的sku
 otto_file_df_1 = split_one_rows_data(
@@ -99,8 +117,8 @@ df_25_1 = df_25_1.rename(columns={'映射产品编码': 'SKU'})
 # --- 合并 ---
 otto_file_df_1 = pd.concat([df_25_1, df_other]).sort_index()
 
-# 在 SKU 后插入新列 儿子-站点识别码
-new_column_name = "儿子-站点识别码"  # 新列名
+# 在 SKU 后插入新列 SKU-站点识别码
+new_column_name = "SKU-站点识别码"  # 新列名
 new_column_data = "OTTO-BTH" + otto_file_df_1["SKU"]  # 新列数据，OTTO平台广告花费的站点都是：OTTO-BTH
 target_column = "SKU"  # 目标列名（在其后插入）
 insert_position = otto_file_df_1.columns.get_loc(target_column) + 1  # 计算插入位置
@@ -108,25 +126,17 @@ otto_file_df_1.insert(insert_position, new_column_name, new_column_data)  # 插�
 # OTTO平台广告花费的站点都是：OTTO-BTH
 otto_file_df_1['站点'] = "OTTO-BTH"
 
-# 映射 平台
-product_map_sku_path = fr"{DESKTOP_ROOT}\站点-匹配表.xlsx"  # 改成对应的映射表
-otto_file_df_2 = sku_mappings(
-    main_df=otto_file_df_1,
-    main_sku='站点',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="站点",
-    map_new_sku="平台",
-    map_sku_sheet='站点匹配'
-)
-# 在 儿子-站点识别码 后插入 儿子-平台识别码
-new_column_name = "儿子-平台识别码"  # 新列名
+# 映射 平台（数据源：platform_shop）
+otto_file_df_2 = map_region_to_platform(otto_file_df_1, site_col='站点')
+# 在 SKU-站点识别码 后插入 SKU-平台识别码
+new_column_name = "SKU-平台识别码"  # 新列名
 new_column_data = otto_file_df_2["映射平台"] + otto_file_df_2["SKU"]  # 新列数据
-target_column = "儿子-站点识别码"  # 目标列名（在其后插入）
+target_column = "SKU-站点识别码"  # 目标列名（在其后插入）
 insert_position = otto_file_df_2.columns.get_loc(target_column) + 1  # 计算插入位置
 otto_file_df_2.insert(insert_position, new_column_name, new_column_data)  # 插入新列
 # 保存目标列
 otto_file_df_2 = otto_file_df_2[
-    ['Artikelnummer', 'SKU', '站点', '映射平台', '儿子-站点识别码', '儿子-平台识别码', 'Ausgaben']]
+    ['Artikelnummer', 'SKU', '站点', '映射平台', 'SKU-站点识别码', 'SKU-平台识别码', 'Ausgaben']]
 
 # 更改列名，将’Ausgaben‘  改为 ’广告费(非AMZ)‘
 otto_file_df_2 = otto_file_df_2.rename(columns={'Ausgaben': '广告费(非AMZ)'})

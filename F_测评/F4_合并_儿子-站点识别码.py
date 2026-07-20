@@ -17,13 +17,13 @@ test_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\测评表\(已完�
 test_file_df = pd.read_excel(test_file_path)
 
 test_file_df = test_file_df.rename(columns={'映射平台': '平台'})
-# 按照 '儿子-站点识别码' 列进行分组，并对 '测评费' 列进行汇总
-grouped_df = test_file_df.groupby('儿子-站点识别码').agg({
+# 按照 'SKU-站点识别码' 列进行分组，并对 '测评费' 列进行汇总
+grouped_df = test_file_df.groupby('SKU-站点识别码').agg({
     '测评费': 'sum',  # 汇总 测评费
     'SKU': 'first',  # 保留每组的第一行数据
     '站点': 'first',  # 保留每组的第一行数据
     '平台': 'first',  # 保留每组的第一行数据
-    '儿子-平台识别码': 'first'  # 保留每组的第一行数据
+    'SKU-平台识别码': 'first'  # 保留每组的第一行数据
 }).reset_index()
 
 grouped_df['测评费'] = np.round(grouped_df['测评费'], 2)
@@ -32,7 +32,7 @@ grouped_df['测评费'] = np.round(grouped_df['测评费'], 2)
 grouped_df['币种'] = 'EUR'
 
 grouped_df = grouped_df[
-    ['SKU', '站点', '平台', '儿子-站点识别码', '儿子-平台识别码', '测评费', '币种']]
+    ['SKU', '站点', '平台', 'SKU-站点识别码', 'SKU-平台识别码', '测评费', '币种']]
 
 # 删除"测评费"列为测评费的行
 grouped_df = grouped_df[grouped_df['测评费'] != 0]
