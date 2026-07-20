@@ -25,8 +25,8 @@ RATE_SHIP_FEE = 1.06  # 运费费率
 SKU_NW_DISCOUNT = 0.8  # NW尾缀SKU 折扣
 
 # 切换报表类型：'日报' | '月报'
-folder_name = '月报'
-# folder_name = '日报'
+# folder_name = '月报'
+folder_name = '日报'
 
 _VALID_FOLDER_NAMES = ('日报', '月报')
 # 日报 获取多少天前的数据

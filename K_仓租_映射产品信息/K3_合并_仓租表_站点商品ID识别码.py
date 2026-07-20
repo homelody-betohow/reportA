@@ -104,7 +104,7 @@ merged_df.loc[1, 'LM-BC的仓租'] = lm_bc_sum  # 在第二行（索引为1）�
 all_fen_tan_cang_zu = merged_df['无平台-需要分摊的费用'].sum()  # 所有仓库 需要分摊的仓租
 
 # 按照 '站点商品ID识别码' 列进行分组，并对 '仓租' 列进行汇总
-# 空的'站点商品ID识别码'的数据会丢失，原-平台 == LM-BC 的数据会丢失
+# 空的「站点商品ID识别码」会在分组时丢失；LM-BC 站点明细在写出前排除（总额见 LM-BC的仓租）
 # 保留「原-平台」供后续平台兜底（K1/K2 库存标签，平台映射失败时仍有值）
 result_df = merged_df.groupby('站点商品ID识别码').agg({
     '海外仓仓租费': 'sum',  # 求和
@@ -203,6 +203,11 @@ filtered_df = result_df_1[result_df_1['站点'].notna() & (result_df_1['站点']
         result_df_1['站点'] != '其他') & (result_df_1['海外仓仓租费'] != 0)]
 
 filtered_df = filtered_df.copy()
+# LM-BC 为库存汇总维度，整包金额已写入 lm_bc_sum；明细行不参与 merge，由 K4 摊到 -BC-ls/-BC-xj
+_n_lm_bc = int((filtered_df["站点"] == "LM-BC").sum())
+if _n_lm_bc:
+    filtered_df = filtered_df[filtered_df["站点"] != "LM-BC"].copy()
+    print(f"输出明细排除 LM-BC 站点行 {_n_lm_bc} 行（总额已在 LM-BC的仓租：{lm_bc_sum}）")
 # 若筛选后无数据（如短周期日报无符合条件的海外仓记录），补一行空行，
 # 用于承载下面的两个汇总值，避免 iloc[0] 因空表越界报错
 if filtered_df.empty:

@@ -26,6 +26,14 @@ _epr_mod.bootstrap(__file__)
 from A_报表.A0_设置_时间段.A0_set_date import shared_date, folder_name
 from A_报表.A0_设置_时间段.A0_paths import DESKTOP_ROOT
 
+
+def _unallocated_rent_total(df: pd.DataFrame) -> float:
+    """K4 写入的无平台仓租总额（通常仅在第 1 行有值）。"""
+    col = df["所有仓库-无平台-需要分摊的费用"]
+    if col.notna().any():
+        return float(col[col.notna()].iloc[0])
+    return float(col.fillna(0).sum())
+
 # TODO 文件路径！！！
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-17)订单统计-{shared_date}.xlsx"
 main_file_df = pd.read_excel(main_file_path)
@@ -49,22 +57,21 @@ _participate = main_file_df['产品状态'] != '分销'
 #     _participate = _participate & ~_mano_eu
 #     print(f'[月报] 忽略 MANO-EU 无平台仓租分摊：排除 {_mano_eu.sum()} 行（MANO 仓租已在 FBA仓租费）')
 
-# 1. 计算需要分摊的总费用
-total_cost = main_file_df['所有仓库-无平台-需要分摊的费用'].sum()
+# 1. 需要分摊的总费用（第 1 行汇总值，避免 sum 重复计）
+total_cost = _unallocated_rent_total(main_file_df)
 # 2. 筛选参与分摊的行
-participating_rows = main_file_df[_participate]
-# 3. 计算分摊值
-num_participating = len(participating_rows)
-if num_participating > 0:
-    allocation_per_row = total_cost / num_participating
-else:
-    allocation_per_row = 0.0
+num_participating = int(_participate.sum())
+# 3. 平均分摊（保持浮点精度，不在此行 round，避免 2512 行累计丢 3～4 元）
+allocation_per_row = total_cost / num_participating if num_participating > 0 else 0.0
 # 4. 创建新列“仓租分摊”
-main_file_df['仓租分摊'] = 0.0  # 初始化新列为0
-main_file_df.loc[_participate, '仓租分摊'] = allocation_per_row
+main_file_df["仓租分摊"] = 0.0
+main_file_df.loc[_participate, "仓租分摊"] = allocation_per_row
 # 重命名
-main_file_df = main_file_df.rename(columns={'海外仓仓租费': '原-海外仓仓租费'})
-main_file_df['海外仓仓租费'] = np.round(main_file_df['原-海外仓仓租费'] + main_file_df['仓租分摊'], 2)
+main_file_df = main_file_df.rename(columns={"海外仓仓租费": "原-海外仓仓租费"})
+# 海外仓仓租费不做逐行 round，保证 sum(18) = sum(17 原海外仓) + total_cost
+main_file_df["海外仓仓租费"] = (
+    main_file_df["原-海外仓仓租费"].fillna(0) + main_file_df["仓租分摊"]
+)
 
 # 空值的地方——补 0   使 仓租合计  可以正常合计；平台、平台商品ID识别码 不补 0
 _exclude_fill0 = {'平台', '平台商品ID识别码'}

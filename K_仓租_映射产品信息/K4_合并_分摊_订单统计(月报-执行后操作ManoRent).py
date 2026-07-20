@@ -12,7 +12,7 @@ K4_合并_分摊_订单统计 — 将海外仓仓租并入订单统计（月报�
   1. left merge：订单统计 ← 仓租「海外仓仓租费」
   2. 仓租有、订单统计无的 SKU 行追加进结果（避免仓租丢失）
   3. 透传「所有仓库-无平台-需要分摊的费用」（仅写在第 1 行，供后续分摊脚本读）
-  4. LM-BC 总仓租对半分给 -BC-ls / -BC-xj，再按各自销量占比摊到行
+  4. LM-BC 总仓租对半分给 -BC-ls / -BC-xj，再按各自销量占比摊到行；删除站点=LM-BC 行（避免双计）
   5. 若干「壳站点」仓租归并到同平台销量更大的真实站点（见 replace_site_with_rent）
 
 【平台字段】
@@ -165,12 +165,20 @@ def allocate_lm_bc_rent(
        行仓租 = 半额 × (该行销量 / 该 suffix 总销量)；销量为 0 时填 0
 
     注意：会覆盖这些行此前 merge 得到的仓租（若有），以分摊结果为准。
+    分摊成功后删除「站点=LM-BC」行（汇总池，非订单站点），避免与明细 merge/追加重复计入。
     """
     lm_bc_sum = cang_zu_df["LM-BC的仓租"].iloc[0]
+    if pd.isna(lm_bc_sum):
+        lm_bc_sum = 0
     out = result_df.copy()
 
     mask = out["站点"].str.contains(r"-BC-ls$|-BC-xj$", regex=True, na=False)
     if not mask.any():
+        if lm_bc_sum:
+            print(
+                "[警告] 有 LM-BC的仓租 但订单统计无 -BC-ls/-BC-xj 行，"
+                "未分摊，保留 LM-BC 站点行"
+            )
         return out
 
     filtered = out.loc[mask].copy()
@@ -183,6 +191,12 @@ def allocate_lm_bc_rent(
     ).fillna(0)
 
     out.loc[filtered.index, "海外仓仓租费"] = filtered["海外仓仓租费"]
+
+    pool_mask = out["站点"] == "LM-BC"
+    n_drop = int(pool_mask.sum())
+    if n_drop:
+        out = out.loc[~pool_mask].reset_index(drop=True)
+        print(f"已删除 LM-BC 汇总站点行 {n_drop} 行（仓租已摊至 -BC-ls/-BC-xj）")
     return out
 
 
