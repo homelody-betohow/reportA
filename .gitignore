@@ -17,12 +17,15 @@ dist/
 *.egg
 .eggs/
 
-# Test / coverage
+# Test / coverage / linters
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
 
 # IDE / editor
 .idea/
@@ -58,7 +61,20 @@ temp/
 ~$*
 *.~*
 
-# Spreadsheet data (报表 Excel 在桌面/网络盘，勿提交到仓库)
+# Spreadsheet / tabular data（业务数据在桌面与网络盘，勿提交）
 *.xlsx
 *.xls
+*.xlsm
 *.csv
+*.tsv
+
+# 本机运行时产物（目录用 .gitkeep 占位）
+runtime/local/*.json
+runtime/logs/
+!runtime/local/.gitkeep
+
+# API 文档抓取缓存
+api/_doc_cache/
+
+# Jupyter
+.ipynb_checkpoints/
