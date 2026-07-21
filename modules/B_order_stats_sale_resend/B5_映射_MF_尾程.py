@@ -23,6 +23,8 @@ from database.db_connection import get_db_manager  # noqa: E402
 MMF_PRICE_TABLE = "mano_mmf_price"
 _KEY_CHUNK = 200
 PRODUCT_MAP_SKU_PATH = fr"{DESKTOP_ROOT}\MANO-MF 尾程.xlsx"
+# False：屏蔽 MANO-MF 尾程.xlsx；DB 未命中直接走 JSON 兜底
+USE_MMF_EXCEL_FALLBACK = False
 # 本机兜底（字段列表）：映射站点 / SKU / SKU-站点识别码 / 单个-MF-派送费
 MMF_FEE_OVERRIDES_PATH = _PROJECT_ROOT / "runtime" / "local" / "mano_mf_fee.json"
 
@@ -320,27 +322,59 @@ def apply_mmf_dispatch_fees_from_db(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_mmf_dispatch_fees_from_excel(df: pd.DataFrame, excel_path: str) -> pd.DataFrame:
-    """数据库未命中的行，用 MANO-MF 尾程.xlsx 按映射站点补全。"""
+    """数据库未命中的行，用 MANO-MF 尾程.xlsx 按映射站点补全。
+
+    Excel 列为「映射站点」/「尾程-{映射站点}」成对出现（如 MANO-FR-OHPAMF）。
+    价表无该站点列时跳过（不中断），留给 JSON 兜底。
+    """
     out = df.copy()
     miss_mask = out["单个-MF-派送费"].isna()
     if not miss_mask.any():
         return out
 
     miss_df = out.loc[miss_mask]
+    try:
+        excel_cols = set(
+            pd.read_excel(excel_path, sheet_name="Sheet1", nrows=0).columns.astype(str)
+        )
+    except Exception as exc:
+        print(
+            f"{Color.YELLOW}[B5] 无法读取 MANO-MF 尾程.xlsx，跳过 Excel 兜底："
+            f"{exc}{Color.RESET}"
+        )
+        return out
+
     filled_parts: list[pd.DataFrame] = []
+    skipped_sites: list[str] = []
     for site in miss_df["映射站点"].dropna().unique():
+        site = str(site).strip()
+        fee_col = f"尾程-{site}"
+        if site not in excel_cols or fee_col not in excel_cols:
+            skipped_sites.append(site)
+            continue
         site_df = miss_df[miss_df["映射站点"] == site]
         site_df_1 = sku_mappings(
             main_df=site_df,
             main_sku="SKU",
             map_sku_path=excel_path,
             map_old_sku=site,
-            map_new_sku=f"尾程-{site}",
+            map_new_sku=fee_col,
             map_sku_sheet="Sheet1",
         )
         filled_parts.append(site_df_1)
 
+    if skipped_sites:
+        print(
+            f"{Color.YELLOW}[B5] MANO-MF 尾程.xlsx 无下列映射站点列，已跳过"
+            f"（改走 JSON 兜底）：{', '.join(sorted(skipped_sites))}{Color.RESET}"
+        )
+
     if not filled_parts:
+        remain = int(out["单个-MF-派送费"].isna().sum())
+        print(
+            f"{Color.CYAN}[B5] MANO-MF 尾程.xlsx 兜底：无可映射站点列；"
+            f"{Color.YELLOW}仍为空 {remain} 行{Color.RESET}"
+        )
         return out
 
     filled_miss = pd.concat(filled_parts)
@@ -354,7 +388,7 @@ def apply_mmf_dispatch_fees_from_excel(df: pd.DataFrame, excel_path: str) -> pd.
     remain = int(out["单个-MF-派送费"].isna().sum())
     print(
         f"{Color.CYAN}[B5] MANO-MF 尾程.xlsx 兜底：补全 {excel_hit} 行；"
-        f"{Color.YELLOW} 仍为空 {remain} 行{Color.RESET}"
+        f"{Color.YELLOW}仍为空 {remain} 行{Color.RESET}"
     )
     return out
 
@@ -605,7 +639,14 @@ def _merge_missing_into_mmf_fee_json(df: pd.DataFrame, json_path: Path) -> int:
 
 
 mf_df_1 = apply_mmf_dispatch_fees_from_db(mf_df)
-mf_df_1 = apply_mmf_dispatch_fees_from_excel(mf_df_1, PRODUCT_MAP_SKU_PATH)
+if USE_MMF_EXCEL_FALLBACK:
+    mf_df_1 = apply_mmf_dispatch_fees_from_excel(mf_df_1, PRODUCT_MAP_SKU_PATH)
+else:
+    remain = int(mf_df_1["单个-MF-派送费"].isna().sum()) if not mf_df_1.empty else 0
+    print(
+        f"{Color.CYAN}[B5] 已屏蔽 MANO-MF 尾程.xlsx；"
+        f"{Color.YELLOW}DB 未命中 {remain} 行改走 JSON 兜底{Color.RESET}"
+    )
 mf_df_1 = apply_mmf_dispatch_fees_from_json(mf_df_1, MMF_FEE_OVERRIDES_PATH)
 mf_df_1["MF-派送费"] = mf_df_1["单个-MF-派送费"] * mf_df_1["仓库SKU销量"]
 
