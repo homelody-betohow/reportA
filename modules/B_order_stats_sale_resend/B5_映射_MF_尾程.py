@@ -22,9 +22,11 @@ from database.db_connection import get_db_manager  # noqa: E402
 
 MMF_PRICE_TABLE = "mano_mmf_price"
 _KEY_CHUNK = 200
-PRODUCT_MAP_SKU_PATH = fr"{DESKTOP_ROOT}\MANO-MF 尾程.xlsx"
+
 # False：屏蔽 MANO-MF 尾程.xlsx；DB 未命中直接走 JSON 兜底
 USE_MMF_EXCEL_FALLBACK = False
+PRODUCT_MAP_SKU_PATH = fr"{DESKTOP_ROOT}\MANO-MF 尾程.xlsx"
+
 # 本机兜底（字段列表）：映射站点 / SKU / SKU-站点识别码 / 单个-MF-派送费
 MMF_FEE_OVERRIDES_PATH = _PROJECT_ROOT / "runtime" / "local" / "mano_mf_fee.json"
 
