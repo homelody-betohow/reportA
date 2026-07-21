@@ -39,14 +39,7 @@ from config.A0_paths import DESKTOP_ROOT
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
-_REPORT_PRA_ROOT = next(
-    (p / "reportPRA" for p in Path(__file__).resolve().parents if (p / "reportPRA").is_dir()),
-    None,
-)
-if _REPORT_PRA_ROOT and str(_REPORT_PRA_ROOT) not in sys.path:
-    sys.path.append(str(_REPORT_PRA_ROOT))
-
-from database.db_connection import get_db_manager  # noqa: E402  # pyright: ignore[reportMissingImports]
+from database.db_connection import get_db_manager  # noqa: E402
 
 SHIPPED_TABLE = "sales_order_shipped"
 PRODUCT_SKU_TABLE = "product_sku"

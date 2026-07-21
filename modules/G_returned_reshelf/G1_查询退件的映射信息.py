@@ -21,14 +21,7 @@ from config.A0_set_date import shared_date, folder_name
 from common.style import Color
 from config.A0_paths import DESKTOP_ROOT
 
-_REPORT_PRA_ROOT = next(
-    (p / "reportPRA" for p in Path(__file__).resolve().parents if (p / "reportPRA").is_dir()),
-    None,
-)
-if _REPORT_PRA_ROOT and str(_REPORT_PRA_ROOT) not in sys.path:
-    sys.path.append(str(_REPORT_PRA_ROOT))
-
-from database.db_connection import get_db_manager  # noqa: E402  # pyright: ignore[reportMissingImports]
+from database.db_connection import get_db_manager  # noqa: E402
 
 
 _COLLATE = "utf8mb4_unicode_ci"

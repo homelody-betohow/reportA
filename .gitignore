@@ -45,6 +45,7 @@ ehthumbs.db
 .env
 .env.*
 !.env.example
+config/db_config.json
 
 # Logs & temp
 *.log

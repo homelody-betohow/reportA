@@ -10,7 +10,8 @@
 
 ```
 reportA/
-├── config/                 # 日期、汇率、路径
+├── config/                 # 日期、汇率、路径；db_config.example.json
+├── database/               # MySQL 连接与表结构（原 reportPRA 拷贝）
 ├── common/                 # 公共工具（SKU 映射、店铺映射、runAll 工具等）
 ├── modules/                # 业务流水线 A→M
 │   ├── A_temu_order_amount/
@@ -128,12 +129,13 @@ python modules/L_shop_rent_allocation/L1_计算月租_合并_分摊_订单统计
 | `信息-映射.xlsx` | 产品 / SKU 信息 |
 | `VAT、平台费-映射.xlsx` | 站点 VAT / 佣金（DB 兜底） |
 | `广告-SKU关系对应.xlsx` | 广告 SKU 对应 |
-| `castorama - SKU类目佣金比例.xlsx` | Castorama 类目佣金 |
 | `MANO-MF 尾程.xlsx` | MANO MF 尾程（也可经 `runtime/local` 覆盖） |
 | `仓租-SKU映射.xlsx` | 海外仓 SKU |
 | `DLZ-FR_广告分摊sku.xlsx` | DLZ FR 广告分摊 |
 | `手动-二次映射.xlsx` | TEMU 无映射单价兜底 |
 | `月租总摊分.xlsx` | 月租摊分规则 |
+
+Castorama 类目佣金已迁至 `runtime/local/castorama_commission.json`（F1 / C5），桌面不再需要 `castorama - SKU类目佣金比例.xlsx`。
 
 ---
 
@@ -159,9 +161,9 @@ python modules/L_shop_rent_allocation/L1_计算月租_合并_分摊_订单统计
 
 ## 外部依赖
 
-**Python：** `pandas`、`openpyxl`、`pymysql`、`numpy`、`chardet`
+**Python：** `pandas`、`openpyxl`、`pymysql`、`DBUtils`、`numpy`、`chardet`
 
-**数据库（MySQL）：** `sales_order_shipped`、`product_sku`、`temu_order_item`、`mano_mmf_price`、`platform_shop`、`product_sku_mapping` 等（连接经外部包 `database.db_connection`）
+**数据库（MySQL）：** `sales_order_shipped`、`product_sku`、`temu_order_item`、`mano_mmf_price`、`platform_shop`、`product_sku_mapping` 等（连接经本仓库 `database.db_connection`；配置见 `config/db_config.example.json` → 复制为 `db_config.json`）
 
 **网络盘 / 本机盘：**
 

@@ -26,16 +26,21 @@ _epr_file = next(p / "ensure_project_root.py" for p in Path(__file__).resolve().
 _spec = importlib.util.spec_from_file_location("ensure_project_root", _epr_file)
 _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
-_epr_mod.bootstrap(__file__)
+_PROJECT_ROOT = _epr_mod.bootstrap(__file__)
 
 import numpy as np
 import pandas as pd
 from config.A0_set_date import *
-from common.sku_mapping import sku_mappings
+from common.castorama_commission import (
+    apply_castorama_commission_from_json,
+    castorama_commission_path,
+)
 from common.split_rows_data_SKU import split_one_rows_data
 from common.platform_shop import map_site_vat_commission
 from config.A0_paths import DESKTOP_ROOT
 from common.style import Color
+
+CASTORAMA_COMMISSION_PATH = castorama_commission_path(_PROJECT_ROOT)
 
 def convert_to_eur(row):
     """
@@ -182,15 +187,9 @@ test_file_df_1['报表金额'] = np.round(test_file_df_1.apply(convert_to_eur, a
 print(f"提现费 = 订单金额 * 0.05 + 0.34\n")
 test_file_df_1['提现费'] = np.round(test_file_df_1['报表金额'] * 0.05 + 0.34, 2)
 
-# 映射 castorama 的 佣金比例，映射不到的问：晓佳
-product_map_sku_path = fr"{DESKTOP_ROOT}\castorama - SKU类目佣金比例.xlsx"
-test_file_df_2 = sku_mappings(
-    main_df=test_file_df_1,
-    main_sku='SKU',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="SKU",
-    map_new_sku="佣金比",
-    map_sku_sheet='Sheet1'
+# 映射 castorama 的 佣金比例（本机 JSON，取代桌面 xlsx）；映射不到的问：晓佳
+test_file_df_2 = apply_castorama_commission_from_json(
+    test_file_df_1, CASTORAMA_COMMISSION_PATH, log_tag="F1"
 )
 # 映射 平台费（佣金）、VAT税（来源：platform_shop.market_region）
 test_file_df_3 = map_site_vat_commission(main_df=test_file_df_2, site_col='站点')

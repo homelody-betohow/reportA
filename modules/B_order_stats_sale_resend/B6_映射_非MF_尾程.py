@@ -47,14 +47,7 @@ from config.A0_set_date import (
 from common.style import Color
 from config.A0_paths import DESKTOP_ROOT
 
-_REPORT_PRA_ROOT = next(
-    (p / "reportPRA" for p in Path(__file__).resolve().parents if (p / "reportPRA").is_dir()),
-    None,
-)
-if _REPORT_PRA_ROOT and str(_REPORT_PRA_ROOT) not in sys.path:
-    sys.path.append(str(_REPORT_PRA_ROOT))
-
-from database.db_connection import get_db_manager  # noqa: E402  # pyright: ignore[reportMissingImports]
+from database.db_connection import get_db_manager  # noqa: E402
 
 # 本机兜底（替代原 VLOOKUP / 手动-二次映射）：定价表缺价时人工补「映射-单个-定价派送费」
 NON_MF_FEE_PATH = _PROJECT_ROOT / "runtime" / "local" / "non_mf_fee.json"

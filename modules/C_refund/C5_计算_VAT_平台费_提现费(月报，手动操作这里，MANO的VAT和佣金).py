@@ -1,4 +1,3 @@
-import json
 import numpy as np
 import pandas as pd
 import importlib.util
@@ -15,211 +14,16 @@ _PROJECT_ROOT = _epr_mod.bootstrap(__file__)
 
 from common.style import Color
 from common.platform_shop import map_site_vat_commission
+from common.castorama_commission import (
+    apply_castorama_commission_from_json,
+    castorama_commission_path,
+    merge_missing_into_castorama_commission_json,
+)
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
 
 # 本机映射（取代桌面「castorama - SKU类目佣金比例.xlsx」）
-CASTORAMA_COMMISSION_PATH = _PROJECT_ROOT / "runtime" / "local" / "castorama_commission.json"
-
-_COL_SKU = "SKU"
-_COL_RATE = "佣金比"
-_COL_MAPPED_RATE = "映射佣金比"
-
-
-def _normalize_sku(sku) -> str:
-    """与 sku_mapping 一致：strip；剥尾缀 -NW。"""
-    if sku is None or (isinstance(sku, float) and pd.isna(sku)):
-        return ""
-    s = str(sku).strip()
-    if s.endswith("-NW"):
-        s = s[:-3]
-    return s
-
-
-def _parse_rate(val) -> float | None:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return None
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return None
-
-
-def _dump_commission_json(payload: dict, json_path: Path) -> None:
-    """写出 castorama 佣金 JSON：items 中每个 {} 占一行，便于对照编辑。"""
-    items = payload.get("items") if isinstance(payload, dict) else None
-    if not isinstance(items, list):
-        json_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        return
-
-    meta = {k: v for k, v in payload.items() if k != "items"}
-    lines = ["{"]
-    for key, val in meta.items():
-        lines.append(
-            f"  {json.dumps(key, ensure_ascii=False)}: "
-            f"{json.dumps(val, ensure_ascii=False)},"
-        )
-    item_field_order = (_COL_SKU, _COL_RATE)
-    lines.append('  "items": [')
-    for i, row in enumerate(items):
-        if isinstance(row, dict):
-            ordered = {k: row.get(k) for k in item_field_order}
-            for k, v in row.items():
-                if k not in ordered:
-                    ordered[k] = v
-            row = ordered
-        row_json = json.dumps(row, ensure_ascii=False, separators=(", ", ": "))
-        suffix = "," if i < len(items) - 1 else ""
-        lines.append(f"    {row_json}{suffix}")
-    lines.append("  ]")
-    lines.append("}")
-    lines.append("")
-    json_path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def _load_castorama_commission(json_path: Path) -> dict[str, float]:
-    """
-    读取 runtime/local/castorama_commission.json → {规范化SKU: 佣金比}。
-    items 形如：[{"SKU": "...", "佣金比": 0.1}, ...]
-    佣金比为 null / 非数字则跳过。
-    """
-    if not json_path.is_file():
-        return {}
-    try:
-        payload = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"{Color.YELLOW}[C5] 无法读取 castorama 佣金 JSON {json_path}：{exc}{Color.RESET}")
-        return {}
-
-    items = payload.get("items") if isinstance(payload, dict) else None
-    if not isinstance(items, list):
-        print(f"{Color.YELLOW}[C5] JSON 缺少 items 列表，已跳过：{json_path}{Color.RESET}")
-        return {}
-
-    out: dict[str, float] = {}
-    for row in items:
-        if not isinstance(row, dict):
-            continue
-        rate = _parse_rate(row.get(_COL_RATE))
-        if rate is None:
-            continue
-        sku = _normalize_sku(row.get(_COL_SKU))
-        if not sku:
-            continue
-        out[sku] = rate
-    return out
-
-
-def _read_commission_payload(json_path: Path) -> dict:
-    """读取 castorama_commission.json；文件不存在或损坏时返回空骨架。"""
-    default = {
-        "version": 1,
-        "description": (
-            "Castorama SKU 类目佣金比例本机映射"
-            "（取代桌面 castorama - SKU类目佣金比例.xlsx）。"
-            "字段：SKU、佣金比。"
-        ),
-        "items": [],
-    }
-    if not json_path.is_file():
-        return default
-    try:
-        payload = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"{Color.YELLOW}[C5] 读取 {json_path} 失败，将重建：{exc}{Color.RESET}")
-        return default
-    if not isinstance(payload, dict):
-        return default
-    if not isinstance(payload.get("items"), list):
-        payload["items"] = []
-    payload.setdefault("version", 1)
-    payload.setdefault("description", default["description"])
-    return payload
-
-
-def apply_castorama_commission_from_json(df: pd.DataFrame, json_path: Path) -> pd.DataFrame:
-    """
-    用本机 JSON 按 SKU 填充「映射佣金比」（取代 Excel sku_mappings）。
-    匹配键：规范化 SKU（剥 -NW）。
-    """
-    out = df.copy()
-    rate_map = _load_castorama_commission(json_path)
-    keys = out[_COL_SKU].map(_normalize_sku)
-    mapped = keys.map(rate_map)
-    out[_COL_MAPPED_RATE] = pd.to_numeric(mapped, errors="coerce")
-
-    hit = int(out[_COL_MAPPED_RATE].notna().sum())
-    total = len(out)
-    print(
-        f"{Color.CYAN}[C5] castorama_commission.json 映射：{hit}/{total} 行命中「{_COL_MAPPED_RATE}」"
-        f"\n  文件：{json_path}{Color.RESET}"
-    )
-    if not rate_map:
-        print(
-            f"{Color.YELLOW}[C5] JSON 为空或未启用；castorama 将依赖 SKU 第4-5位规则兜底{Color.RESET}"
-        )
-    return out
-
-
-def _merge_missing_into_castorama_commission_json(df: pd.DataFrame, json_path: Path) -> int:
-    """
-    将 castorama 仍缺「映射平台费（佣金）」的 SKU 追加进 castorama_commission.json。
-    - 已存在的 SKU：保留原佣金比；
-    - 不存在的：追加一条，佣金比=null，待手工填写后重跑 C5。
-    返回新追加条数。
-    """
-    castorama = df["平台"].astype(str).str.lower() == "castorama"
-    empty = castorama & (
-        df["映射平台费（佣金）"].isna()
-        | df["映射平台费（佣金）"].astype(str).str.strip().isin(["", "nan", "None"])
-    )
-    miss_df = df.loc[empty]
-    if miss_df.empty:
-        return 0
-
-    pending: dict[str, dict] = {}
-    for _, r in miss_df.iterrows():
-        sku = _normalize_sku(r.get(_COL_SKU))
-        if not sku or sku in pending:
-            continue
-        pending[sku] = {_COL_SKU: sku, _COL_RATE: None}
-    if not pending:
-        return 0
-
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = _read_commission_payload(json_path)
-    existing_items: list[dict] = []
-    existing_keys: set[str] = set()
-
-    for row in payload["items"]:
-        if not isinstance(row, dict):
-            continue
-        key = _normalize_sku(row.get(_COL_SKU))
-        if not key:
-            continue
-        existing_keys.add(key)
-        row[_COL_SKU] = key
-        existing_items.append(row)
-
-    n_added = 0
-    for key, row in pending.items():
-        if key in existing_keys:
-            continue
-        existing_items.append(row)
-        n_added += 1
-
-    existing_items.sort(key=lambda x: _normalize_sku(x.get(_COL_SKU)))
-    payload["items"] = existing_items
-    _dump_commission_json(payload, json_path)
-    print(
-        f"{Color.YELLOW}[C5] 已写入 {json_path}："
-        f"新增待填 {n_added} 条，合计 {len(existing_items)} 条"
-        f"（请填写「{_COL_RATE}」后重跑 C5）{Color.RESET}"
-    )
-    return n_added
+CASTORAMA_COMMISSION_PATH = castorama_commission_path(_PROJECT_ROOT)
 
 
 # TODO 文件路径！！！
@@ -235,7 +39,9 @@ else:
 main_file_df = main_file_df.rename(columns={'映射VAT税': 'amazon-VAT税'})
 
 # 映射 castorama 的 佣金比例（本机 JSON，取代桌面 xlsx）
-main_file_df = apply_castorama_commission_from_json(main_file_df, CASTORAMA_COMMISSION_PATH)
+main_file_df = apply_castorama_commission_from_json(
+    main_file_df, CASTORAMA_COMMISSION_PATH, log_tag="C5"
+)
 
 # 映射 平台费（佣金）、VAT税（仅 DB platform_shop）
 main_file_df_1 = map_site_vat_commission(
@@ -396,7 +202,9 @@ _empty_commission = _castorama & (
     | main_file_df_2['映射平台费（佣金）'].astype(str).str.strip().isin(['', 'nan', 'None'])
 )
 if _empty_commission.any():
-    _merge_missing_into_castorama_commission_json(main_file_df_2, CASTORAMA_COMMISSION_PATH)
+    merge_missing_into_castorama_commission_json(
+        main_file_df_2, CASTORAMA_COMMISSION_PATH, log_tag="C5"
+    )
     print(
         f'{Color.RED}检查失败：castorama 的「映射平台费（佣金）」存在空值，'
         f'共 {_empty_commission.sum()} 行；'

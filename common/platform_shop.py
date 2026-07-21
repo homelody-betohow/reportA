@@ -16,25 +16,16 @@ platform_shop 统一映射：
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 import pandas as pd
 import pymysql.cursors
 
+from database.db_connection import get_db_manager
+
 # LM_BC_FR / LM_RP_FR：映射站点按平台 sku 前缀追加 -ls / -xj（DB 存的是无后缀站点）
 LM_FR_SHOPS: frozenset[str] = frozenset({"LM_BC_FR", "LM_RP_FR"})
 _LM_REGION_SUFFIX_RE = re.compile(r"-(?:ls|xj)$")
-
-_REPORT_PRA_ROOT = next(
-    (p / "reportPRA" for p in Path(__file__).resolve().parents if (p / "reportPRA").is_dir()),
-    None,
-)
-# 用 append，避免盖住本仓库的 config/（reportPRA 也有同名 config 包）
-if _REPORT_PRA_ROOT and str(_REPORT_PRA_ROOT) not in sys.path:
-    sys.path.append(str(_REPORT_PRA_ROOT))
-
-from database.db_connection import get_db_manager  # noqa: E402  # pyright: ignore[reportMissingImports]
 
 _EXCEL_SHEET = "VAT税、佣金"
 _EXCEL_FILE = "VAT、平台费-映射.xlsx"
