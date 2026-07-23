@@ -48,8 +48,8 @@ from database.db_connection import get_db_manager  # noqa: E402
 from api.ding_disk.exceptions import DingDiskError  # noqa: E402
 from api.ding_disk.workbook import (  # noqa: E402
     Workbook,
+    clean_cell,
     filter_by_column,
-    normalize_cell,
 )
 
 # 与 productInfo.py 保持一致
@@ -133,8 +133,10 @@ def fetch_product_map(
                     chunk,
                 )
                 for row in cur.fetchall():
-                    sku = str(row["product_sku"])
-                    result[sku] = {c: normalize_cell(row.get(c)) for c in db_cols}
+                    sku = clean_cell(row["product_sku"])
+                    if not sku:
+                        continue
+                    result[sku] = {c: clean_cell(row.get(c)) for c in db_cols}
     finally:
         conn.close()
     return result
@@ -172,7 +174,7 @@ def sync_fields_to_sheet(
         # 保留相对原表的行号：用原 df 索引定位
         excel_rows = [int(idx) + 2 for idx in work.index.tolist()]
 
-    sku_series = work[SKU_SHEET_COL].map(normalize_cell)
+    sku_series = work[SKU_SHEET_COL].map(clean_cell)
     wanted_skus = [s for s in sku_series.tolist() if s]
     db_cols = [UP_FIELD_MAP[k].db_col for k in field_keys]
     # 去重保持顺序
@@ -198,7 +200,7 @@ def sync_fields_to_sheet(
             if not sku:
                 continue
             excel_row = excel_rows[i] if excel_rows is not None else (i + 2)
-            sheet_val = normalize_cell(work.iloc[i][field.sheet_col])
+            sheet_val = clean_cell(work.iloc[i][field.sheet_col])
             db_row = db_map.get(sku)
             if db_row is None:
                 stats.missing_in_db += 1

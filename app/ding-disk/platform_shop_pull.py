@@ -53,9 +53,10 @@ from database.db_connection import get_db_manager  # noqa: E402
 from api.ding_disk.exceptions import DingDiskError  # noqa: E402
 from api.ding_disk.workbook import (  # noqa: E402
     Workbook,
+    clean_cell,
+    clean_pairs,
     filter_by_column,
     kv_pairs_from_df,
-    normalize_cell,
 )
 
 # 钉钉表格文档 ID（知识库 nodeId / dentryUuid）
@@ -125,10 +126,10 @@ def map_field_values(
     """
     value_map = FIELD_VALUE_MAP.get(field_key)
     if not value_map:
-        return dict(pairs), 0
+        return clean_pairs(pairs), 0
     mapped: Dict[str, str] = {}
     invalid = 0
-    for key, raw in pairs.items():
+    for key, raw in clean_pairs(pairs).items():
         if raw in value_map:
             mapped[key] = value_map[raw]
         else:
@@ -180,7 +181,7 @@ def fetch_existing_values(hashes: Sequence[str], db_col: str) -> Dict[str, str]:
                     chunk,
                 )
                 for row in cur.fetchall():
-                    result[normalize_cell(row[FIX_DB_COL])] = normalize_cell(row.get("v"))
+                    result[clean_cell(row[FIX_DB_COL])] = clean_cell(row.get("v"))
     finally:
         conn.close()
     return result
@@ -192,7 +193,11 @@ def apply_field_updates(
     db_col: str,
     dry_run: bool = False,
 ) -> UpdateStats:
-    """按 shop_hash 更新 ``platform_shop.<db_col>``；仅写入有变化的行。"""
+    """按 shop_hash 更新 ``platform_shop.<db_col>``；仅写入有变化的行。
+
+    写库前 ``clean_pairs``，确保两端空格/不可见字符不会入库。
+    """
+    pairs = clean_pairs(pairs)
     stats = UpdateStats(unique_keys=len(pairs))
     if not pairs:
         return stats

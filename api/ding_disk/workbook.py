@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 import pandas as pd
 
@@ -111,6 +111,41 @@ def normalize_cell(val: Any) -> str:
     return text
 
 
+# strip() 默认不含的常见不可见字符（表格粘贴常带入）
+_EDGE_INVISIBLE = (
+    "\u200b"  # ZERO WIDTH SPACE
+    "\u200c"  # ZERO WIDTH NON-JOINER
+    "\u200d"  # ZERO WIDTH JOINER
+    "\ufeff"  # BOM / ZERO WIDTH NO-BREAK SPACE
+)
+
+
+def clean_cell(val: Any) -> str:
+    """写库/比对前清洗单元格：去两端空白与常见不可见字符。
+
+    在 ``normalize_cell`` 基础上再剥零宽空格等，避免肉眼看不见的误输入入库。
+    """
+    text = normalize_cell(val)
+    if not text:
+        return ""
+    while text and (text[0] in _EDGE_INVISIBLE or text[0].isspace()):
+        text = text[1:]
+    while text and (text[-1] in _EDGE_INVISIBLE or text[-1].isspace()):
+        text = text[:-1]
+    return text
+
+
+def clean_pairs(pairs: Mapping[str, str]) -> Dict[str, str]:
+    """清洗键值两端空白；空 key 丢弃，同 key 后者覆盖。"""
+    cleaned: Dict[str, str] = {}
+    for key, value in pairs.items():
+        k = clean_cell(key)
+        if not k:
+            continue
+        cleaned[k] = clean_cell(value)
+    return cleaned
+
+
 def require_columns(df: pd.DataFrame, cols: Sequence[str]) -> None:
     """确认 DataFrame 含指定列，否则抛 ``KeyError``。"""
     missing = [c for c in cols if c not in df.columns]
@@ -125,13 +160,13 @@ def filter_by_column(
 ) -> tuple[pd.DataFrame, List[str]]:
     """按列值过滤；返回 ``(filtered_df, missing_values)``。
 
-    比较前对单元格与目标值均做 ``normalize_cell``。
+    比较前对单元格与目标值均做 ``clean_cell``。
     """
     require_columns(df, [column])
-    wanted = {normalize_cell(v) for v in values if normalize_cell(v)}
+    wanted = {clean_cell(v) for v in values if clean_cell(v)}
     if not wanted:
         return df.iloc[0:0].copy(), []
-    series = df[column].map(normalize_cell)
+    series = df[column].map(clean_cell)
     filtered = df.loc[series.isin(wanted)].copy()
     found = set(series[series.isin(wanted)].tolist())
     missing = sorted(wanted - found)
@@ -147,12 +182,12 @@ def kv_pairs_from_df(
 ) -> tuple[Dict[str, str], int]:
     """从两列提取 ``{key: value}``（同 key 后者覆盖）。
 
-    返回 ``(pairs, empty_value_skipped)``。空 key 始终跳过；
-    ``allow_empty=False`` 时跳过空 value。
+    键值经 ``clean_cell`` 清洗。返回 ``(pairs, empty_value_skipped)``。
+    空 key 始终跳过；``allow_empty=False`` 时跳过空 value。
     """
     require_columns(df, [key_col, value_col])
-    keys = df[key_col].map(normalize_cell)
-    vals = df[value_col].map(normalize_cell)
+    keys = df[key_col].map(clean_cell)
+    vals = df[value_col].map(clean_cell)
     mask_key = keys.ne("")
     empty_skipped = int((mask_key & vals.eq("")).sum()) if not allow_empty else 0
     keep = mask_key if allow_empty else (mask_key & vals.ne(""))
@@ -627,6 +662,8 @@ __all__ = [
     "max_used_col",
     "max_used_col_letter",
     "max_used_row",
+    "clean_cell",
+    "clean_pairs",
     "normalize_cell",
     "read_all_sheets",
     "read_sheet",

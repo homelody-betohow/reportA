@@ -1,25 +1,25 @@
-"""将 ``platform_shop`` 新增行同步到钉钉「店铺信息」表格（DB → 钉钉追加）。
+"""将 ``warehouse`` 新增行同步到钉钉「仓库信息」表格（DB → 钉钉追加）。
 
-与 ``platform_shop_pull.py`` 方向相反：只处理表格中尚不存在的 ``shop_hash``，
-按表头列顺序追加整行（含店铺编码与白名单字段）。
+与 ``warehouse_pull.py`` 方向相反：只处理表格中尚不存在的 ``warehouse_id``，
+按表头列顺序追加整行（含仓库ID、仓库编码与白名单字段）。
 
 匹配键::
-    shop_hash  →  店铺编码
+    warehouse_id  →  仓库ID
 
 文档 ID（workbookId / nodeId）::
-    NZQYprEoWo75xoEDtBqGzKqPW1waOeDk
+    dpYLaezmVNwrRXb2tPm77keqJrMqPxX6
 
 用法（项目根目录）::
 
-    # 默认：找出库中有、表中无的店铺，追加到 Sheet1
-    python app/ding-disk/platform_shop_push.py
-    python app/ding-disk/platform_shop_push.py --dry-run
+    # 默认：找出库中有、表中无的仓库，追加到 Sheet1
+    python app/ding-disk/warehouse_push.py
+    python app/ding-disk/warehouse_push.py --dry-run
 
-    # 只处理指定店铺编码
-    python app/ding-disk/platform_shop_push.py --hash ecdfa4883185ebf5...
-    python app/ding-disk/platform_shop_push.py --hash ecdfa488... --dry-run --preview 5
+    # 只处理指定仓库ID
+    python app/ding-disk/warehouse_push.py --id 237
+    python app/ding-disk/warehouse_push.py --id 237 --dry-run --preview 5
 
-    python app/ding-disk/platform_shop_push.py --list-sheets
+    python app/ding-disk/warehouse_push.py --list-sheets
 """
 
 from __future__ import annotations
@@ -50,45 +50,53 @@ from database.db_connection import get_db_manager  # noqa: E402
 from api.ding_disk.exceptions import DingDiskError  # noqa: E402
 from api.ding_disk.workbook import Workbook, clean_cell  # noqa: E402
 
-# 与 platform_shop_pull.py 保持一致
-WORKBOOK_ID = "NZQYprEoWo75xoEDtBqGzKqPW1waOeDk"
+# 与 warehouse_pull.py 保持一致
+WORKBOOK_ID = "dpYLaezmVNwrRXb2tPm77keqJrMqPxX6"
 DEFAULT_SHEET = "Sheet1"
-TABLE = "platform_shop"
-FIX_SHEET_COL = "店铺编码"
-FIX_DB_COL = "shop_hash"
+TABLE = "warehouse"
+FIX_SHEET_COL = "仓库ID"
+FIX_DB_COL = "warehouse_id"
 BATCH_SIZE = 500
 
 
 @dataclass(frozen=True)
 class FieldMap:
-    """字段名 → 钉钉列 → platform_shop 列。"""
+    """字段名 → 钉钉列 → warehouse 列。"""
 
     sheet_col: str
     db_col: str
 
 
 # 白名单：DB → 钉钉（追加行时写入；不含匹配键，匹配键单独处理）
+# warehouse_code 虽不在 pull 白名单，追加新行时需写入「仓库编码」列
 UP_FIELD_MAP: Mapping[str, FieldMap] = {
-    "shop_name_en": FieldMap(sheet_col="店铺名称", db_col="shop_name_en"),
-    "platform": FieldMap(sheet_col="平台", db_col="platform"),
-    "platform_site": FieldMap(sheet_col="站点", db_col="platform_site"),
+    "warehouse_code": FieldMap(sheet_col="仓库编码", db_col="warehouse_code"),
+    "warehouse_name": FieldMap(sheet_col="仓库名称", db_col="warehouse_name"),
+    "country_code": FieldMap(sheet_col="国家", db_col="country_code"),
+    "provider_code": FieldMap(sheet_col="服务商", db_col="provider_code"),
     "market_code": FieldMap(sheet_col="销售平台", db_col="market_code"),
     "market_region": FieldMap(sheet_col="销售站点", db_col="market_region"),
-    "commission_rate": FieldMap(sheet_col="平台费率", db_col="commission_rate"),
-    "vat_rate": FieldMap(sheet_col="VAT费率", db_col="vat_rate"),
-    "store_fees": FieldMap(sheet_col="月租", db_col="store_fees"),
-    "currency": FieldMap(sheet_col="币种", db_col="currency"),
-    "ops_leader": FieldMap(sheet_col="运营经理", db_col="ops_leader"),
     "ops_owner": FieldMap(sheet_col="运营负责人", db_col="ops_owner"),
-    "shop_status": FieldMap(sheet_col="状态", db_col="shop_status"),
+    "is_transfer": FieldMap(sheet_col="可调拨", db_col="is_transfer"),
+    "snapshot_inventory": FieldMap(sheet_col="库存快照", db_col="snapshot_inventory"),
+    "warehouse_status": FieldMap(sheet_col="状态", db_col="warehouse_status"),
     "remark": FieldMap(sheet_col="备注", db_col="remark"),
 }
 
 # 库内值 → 表格文案（与 pull 的 FIELD_VALUE_MAP 互逆）
 FIELD_DISPLAY_MAP: Mapping[str, Mapping[str, str]] = {
-    "shop_status": {
-        "1": "正常",
+    "is_transfer": {
+        "1": "是",
+        "0": "否",
+    },
+    "snapshot_inventory": {
+        "1": "是",
+        "0": "否",
+    },
+    "warehouse_status": {
+        "1": "启用",
         "0": "停用",
+        "-1": "废弃",
     },
 }
 
@@ -96,11 +104,11 @@ FIELD_DISPLAY_MAP: Mapping[str, Mapping[str, str]] = {
 @dataclass
 class AppendStats:
     db_rows: int = 0
-    sheet_hashes: int = 0
+    sheet_ids: int = 0
     already_in_sheet: int = 0
     to_append: int = 0
     appended: int = 0
-    missing_hash_col: bool = False
+    missing_id_col: bool = False
 
 
 def _sheet_to_db_col() -> Dict[str, str]:
@@ -125,23 +133,30 @@ def display_cell(field_key: Optional[str], value: str) -> str:
     return value_map.get(value, value)
 
 
-def fetch_shop_rows(hashes: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
-    """读取 platform_shop 行（按 id）；``hashes`` 非空时仅这些 shop_hash。"""
+def fetch_warehouse_rows(
+    warehouse_ids: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """读取 warehouse 行（按 id）；``warehouse_ids`` 非空时仅这些 warehouse_id。"""
     db_cols = [FIX_DB_COL] + [f.db_col for f in UP_FIELD_MAP.values()]
-    # 去重保持顺序
     seen: List[str] = []
     for c in db_cols:
         if c not in seen:
             seen.append(c)
-    col_sql = ", ".join(f"`{c}`" for c in seen)
-
+    # remark 可能尚未建列：只选实际存在的列
     db = get_db_manager()
     conn = db.get_connection()
     rows: List[Dict[str, Any]] = []
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            if hashes:
-                wanted = [clean_cell(h) for h in hashes if clean_cell(h)]
+            cur.execute(f"SHOW COLUMNS FROM `{TABLE}`")
+            existing_cols = {r["Field"] for r in cur.fetchall()}
+            select_cols = [c for c in seen if c in existing_cols]
+            if FIX_DB_COL not in select_cols:
+                select_cols.insert(0, FIX_DB_COL)
+            col_sql = ", ".join(f"`{c}`" for c in select_cols)
+
+            if warehouse_ids:
+                wanted = [clean_cell(i) for i in warehouse_ids if clean_cell(i)]
                 if not wanted:
                     return []
                 for i in range(0, len(wanted), BATCH_SIZE):
@@ -157,7 +172,7 @@ def fetch_shop_rows(hashes: Optional[Sequence[str]] = None) -> List[Dict[str, An
             else:
                 cur.execute(
                     f"SELECT {col_sql} FROM `{TABLE}` "
-                    f"WHERE TRIM(`{FIX_DB_COL}`) <> '' "
+                    f"WHERE `{FIX_DB_COL}` IS NOT NULL "
                     f"ORDER BY id ASC"
                 )
                 rows.extend(cur.fetchall())
@@ -166,14 +181,14 @@ def fetch_shop_rows(hashes: Optional[Sequence[str]] = None) -> List[Dict[str, An
     return rows
 
 
-def sheet_hash_set(df: pd.DataFrame) -> set[str]:
-    """表格已有店铺编码集合。"""
+def sheet_id_set(df: pd.DataFrame) -> set[str]:
+    """表格已有仓库ID集合。"""
     if FIX_SHEET_COL not in df.columns:
         return set()
     return {
-        h
-        for h in df[FIX_SHEET_COL].map(clean_cell).tolist()
-        if h
+        wid
+        for wid in df[FIX_SHEET_COL].map(clean_cell).tolist()
+        if wid
     }
 
 
@@ -205,27 +220,27 @@ def sync_new_rows_to_sheet(
     df: pd.DataFrame,
     *,
     dry_run: bool = False,
-    hashes: Optional[Sequence[str]] = None,
+    warehouse_ids: Optional[Sequence[str]] = None,
     preview: int = -1,
 ) -> AppendStats:
-    """把库中有、表格无的店铺追加到钉钉表。"""
+    """把库中有、表格无的仓库追加到钉钉表。"""
     stats = AppendStats()
     if FIX_SHEET_COL not in df.columns:
-        stats.missing_hash_col = True
+        stats.missing_id_col = True
         return stats
 
-    existing = sheet_hash_set(df)
-    stats.sheet_hashes = len(existing)
+    existing = sheet_id_set(df)
+    stats.sheet_ids = len(existing)
 
-    db_rows = fetch_shop_rows(hashes)
+    db_rows = fetch_warehouse_rows(warehouse_ids)
     stats.db_rows = len(db_rows)
 
     new_rows: List[Dict[str, Any]] = []
     for row in db_rows:
-        shop_hash = clean_cell(row.get(FIX_DB_COL))
-        if not shop_hash:
+        wid = clean_cell(row.get(FIX_DB_COL))
+        if not wid:
             continue
-        if shop_hash in existing:
+        if wid in existing:
             stats.already_in_sheet += 1
             continue
         new_rows.append(row)
@@ -254,16 +269,16 @@ def sync_new_rows_to_sheet(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="将 platform_shop 新增行追加到钉钉「店铺信息」表格（DB → 钉钉）",
+        description="将 warehouse 新增行追加到钉钉「仓库信息」表格（DB → 钉钉）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "匹配键: shop_hash → 店铺编码\n"
-            "追加列: 店铺编码 + 白名单字段（按表头对齐，未知列留空）\n\n"
+            "匹配键: warehouse_id → 仓库ID\n"
+            "追加列: 仓库ID + 仓库编码 + 白名单字段（按表头对齐，未知列留空）\n\n"
             "示例:\n"
-            "  python app/ding-disk/platform_shop_push.py\n"
-            "  python app/ding-disk/platform_shop_push.py --dry-run\n"
-            "  python app/ding-disk/platform_shop_push.py --hash <shop_hash>\n"
-            "  python app/ding-disk/platform_shop_push.py --dry-run --preview 10\n"
+            "  python app/ding-disk/warehouse_push.py\n"
+            "  python app/ding-disk/warehouse_push.py --dry-run\n"
+            "  python app/ding-disk/warehouse_push.py --id 237\n"
+            "  python app/ding-disk/warehouse_push.py --dry-run --preview 10\n"
         ),
     )
     parser.add_argument("--workbook-id", default=WORKBOOK_ID, help="表格文档 ID")
@@ -271,11 +286,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sheet", default=None, help=f"工作表名称；默认 {DEFAULT_SHEET}")
     parser.add_argument("--raw", action="store_true", help="--list-sheets 时缩进 JSON")
     parser.add_argument(
-        "--hash",
+        "--id",
         action="append",
-        dest="hashes",
+        dest="warehouse_ids",
         default=None,
-        help="仅处理指定店铺编码 shop_hash（可重复）；默认对比库内全部",
+        help="仅处理指定仓库ID（可重复）；默认对比库内全部",
     )
     parser.add_argument("--dry-run", action="store_true", help="统计待追加行，不写钉钉")
     parser.add_argument(
@@ -315,19 +330,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         df = wb.read_sheet(sheet, header=True)
 
         mode = "dry-run" if args.dry_run else "write"
-        hash_hint = f" hashes={','.join(args.hashes)}" if args.hashes else ""
-        print(f"[SYNC] DB→钉钉追加 sheet={sheet}{hash_hint} mode={mode}")
+        id_hint = f" ids={','.join(args.warehouse_ids)}" if args.warehouse_ids else ""
+        print(f"[SYNC] DB→钉钉追加 sheet={sheet}{id_hint} mode={mode}")
 
         stats = sync_new_rows_to_sheet(
             wb,
             sheet,
             df,
             dry_run=bool(args.dry_run),
-            hashes=args.hashes,
+            warehouse_ids=args.warehouse_ids,
             preview=int(args.preview),
         )
 
-        if stats.missing_hash_col:
+        if stats.missing_id_col:
             print(
                 f"[FAIL] 表格缺少列: [{FIX_SHEET_COL}]；实际列={list(df.columns)}",
                 file=sys.stderr,
@@ -337,9 +352,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         verb = "would_append" if args.dry_run else "appended"
         print(
             f"[APPEND] {TABLE} → [{FIX_SHEET_COL}]  "
-            f"db_rows={stats.db_rows} sheet_hashes={stats.sheet_hashes} "
+            f"db_rows={stats.db_rows} sheet_ids={stats.sheet_ids} "
             f"already_in_sheet={stats.already_in_sheet} "
-            f"to_append={stats.to_append} {verb}={stats.appended if not args.dry_run else stats.to_append}"
+            f"to_append={stats.to_append} "
+            f"{verb}={stats.appended if not args.dry_run else stats.to_append}"
         )
         return 0
     except DingDiskError as exc:

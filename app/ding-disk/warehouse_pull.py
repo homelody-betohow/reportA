@@ -1,25 +1,22 @@
-"""读取钉钉在线表格「产品信息」，并回写 ``product_sku`` 白名单字段。
+"""读取钉钉在线表格「仓库信息」，并回写 ``warehouse`` 白名单字段。
 
 表格读写委托 ``api.ding_disk.workbook.Workbook``；本脚本只负责字段映射与 DB 更新。
 
-文档 ID（workbookId / nodeId）::
-    Obva6QBXJwjBxoE2sM62MrzGVn4qY5Pr
+匹配键::
+    仓库ID  →  warehouse_id
+
+文档 ID（workbookId / nodeId）请填下方 ``WORKBOOK_ID``，或运行时 ``--workbook-id``。
 
 用法（项目根目录）::
 
-    # 默认：读 Sheet1，更新白名单全部字段
-    python app/ding-disk/product_sku_pull.py
-    python app/ding-disk/product_sku_pull.py --dry-run
-
-    # 只更新部分字段 / 指定 SKU
-    python app/ding-disk/product_sku_pull.py --up-field supplier_abbr
-    python app/ding-disk/product_sku_pull.py --sku XPM0213
-    python app/ding-disk/product_sku_pull.py --sku XPM0213 --up-field supplier_abbr --dry-run
+    # 只更新部分字段 / 指定仓库ID
+    python app/ding-disk/warehouse_pull.py --up-field ops_owner
+    python app/ding-disk/warehouse_pull.py --id 237
+    python app/ding-disk/warehouse_pull.py --id 237 --up-field warehouse_status --dry-run
 
     # 只读（不写库）
-    python app/ding-disk/product_sku_pull.py --no-update --preview 20
-    python app/ding-disk/product_sku_pull.py --list-sheets
-    python app/ding-disk/product_sku_pull.py --all --no-update --out-dir ./runtime/local/ding_product
+    python app/ding-disk/warehouse_pull.py --no-update --preview 20
+    python app/ding-disk/warehouse_pull.py --list-sheets
 """
 
 from __future__ import annotations
@@ -56,51 +53,97 @@ from api.ding_disk.workbook import (  # noqa: E402
     kv_pairs_from_df,
 )
 
-# 钉钉表格文档 ID（知识库 nodeId / dentryUuid）
-WORKBOOK_ID = "Obva6QBXJwjBxoE2sM62MrzGVn4qY5Pr"
+# 钉钉表格文档 ID（知识库 nodeId / dentryUuid）；空则必须传 --workbook-id
+WORKBOOK_ID = "dpYLaezmVNwrRXb2tPm77keqJrMqPxX6"
 DEFAULT_SHEET = "Sheet1"
-TABLE = "product_sku"
-FIX_SHEET_COL = "SKU"
+TABLE = "warehouse"
+FIX_SHEET_COL = "仓库ID"
+FIX_DB_COL = "warehouse_id"
 BATCH_SIZE = 500
 
 
 @dataclass(frozen=True)
 class FieldMap:
-    """字段名 → 钉钉列 → product_sku 列。"""
+    """字段名 → 钉钉列 → warehouse 列。"""
 
     sheet_col: str
     db_col: str
 
 
-# 白名单：仅允许更新这些字段；默认全部更新
+# 白名单：仅允许更新这些字段；默认全部更新（不含匹配键 warehouse_id）
 UP_FIELD_MAP: Mapping[str, FieldMap] = {
-    "supplier_abbr": FieldMap(sheet_col="供应商", db_col="supplier_abbr"),
-    "supplier_name": FieldMap(sheet_col="供应商全称", db_col="supplier_name"),
-    "ops_model": FieldMap(sheet_col="运营模式", db_col="ops_model"),
-    "product_uid": FieldMap(sheet_col="商品ID", db_col="product_uid"),
-    "category_lv1": FieldMap(sheet_col="一级分类", db_col="category_lv1"),
-    "category_lv2": FieldMap(sheet_col="二级分类", db_col="category_lv2"),
-    "category_lv3": FieldMap(sheet_col="三级分类", db_col="category_lv3"),
-    "declare_price": FieldMap(sheet_col="申报价值USD", db_col="declare_price_usd"),
-    "declare_name_cn": FieldMap(sheet_col="申报中文", db_col="declare_name_cn"),
-    "declare_name_en": FieldMap(sheet_col="申报英文", db_col="declare_name_en"),
-    "hs_code": FieldMap(sheet_col="海关编码", db_col="hs_code"),
-    "amz_lifecycle": FieldMap(sheet_col="AMZ状态", db_col="amz_lifecycle"),
-    "local_lifecycle": FieldMap(sheet_col="本土状态", db_col="local_lifecycle"),
-    "accounting_class": FieldMap(sheet_col="核算分类", db_col="accounting_class"),
-    "ops_model": FieldMap(sheet_col="运营模式", db_col="ops_model"),
+    "warehouse_name": FieldMap(sheet_col="仓库名称", db_col="warehouse_name"),
+    "country_code": FieldMap(sheet_col="国家", db_col="country_code"),
+    "provider_code": FieldMap(sheet_col="服务商", db_col="provider_code"),
+    "market_code": FieldMap(sheet_col="销售平台", db_col="market_code"),
+    "market_region": FieldMap(sheet_col="销售站点", db_col="market_region"),
+    "ops_owner": FieldMap(sheet_col="运营负责人", db_col="ops_owner"),
+    "is_transfer": FieldMap(sheet_col="可调拨", db_col="is_transfer"),
+    "snapshot_inventory": FieldMap(sheet_col="库存快照", db_col="snapshot_inventory"),
+    "warehouse_status": FieldMap(sheet_col="状态", db_col="warehouse_status"),
+    "remark": FieldMap(sheet_col="备注", db_col="remark"),
+}
+
+# 表格文案 → 库内值；亦接受已是数字的写法
+# warehouse_status：1=可用 0=不可用 -1=已废弃
+FIELD_VALUE_MAP: Mapping[str, Mapping[str, str]] = {
+    "is_transfer": {
+        "是": "1",
+        "否": "0",
+        "1": "1",
+        "0": "0",
+    },
+    "snapshot_inventory": {
+        "是": "1",
+        "否": "0",
+        "1": "1",
+        "0": "0",
+    },
+    "warehouse_status": {
+        "启用": "1",
+        "可用": "1",
+        "停用": "0",
+        "不可用": "0",
+        "废弃": "-1",
+        "已废弃": "-1",
+        "1": "1",
+        "0": "0",
+        "-1": "-1",
+    },
 }
 
 
 @dataclass
 class UpdateStats:
     sheet_rows: int = 0
-    unique_skus: int = 0
+    unique_keys: int = 0
     empty_value: int = 0
+    invalid_value: int = 0
     missing_in_db: int = 0
     unchanged: int = 0
     updated: int = 0
     skipped_missing_col: bool = False
+
+
+def map_field_values(
+    field_key: str,
+    pairs: Mapping[str, str],
+) -> Tuple[Dict[str, str], int]:
+    """按 FIELD_VALUE_MAP 转换单元格值；未配置映射则原样返回。
+
+    返回 ``(mapped_pairs, invalid_skipped)``。映射表存在但值不在表内时跳过。
+    """
+    value_map = FIELD_VALUE_MAP.get(field_key)
+    if not value_map:
+        return clean_pairs(pairs), 0
+    mapped: Dict[str, str] = {}
+    invalid = 0
+    for key, raw in clean_pairs(pairs).items():
+        if raw in value_map:
+            mapped[key] = value_map[raw]
+        else:
+            invalid += 1
+    return mapped, invalid
 
 
 def resolve_up_fields(keys: Optional[Sequence[str]]) -> List[str]:
@@ -129,25 +172,25 @@ def load_frames(
     return {target: wb.read_sheet(target, header=header)}
 
 
-def fetch_existing_values(skus: Sequence[str], db_col: str) -> Dict[str, str]:
-    """批量读取 product_sku 当前字段值。"""
-    if not skus:
+def fetch_existing_values(ids: Sequence[str], db_col: str) -> Dict[str, str]:
+    """批量读取 warehouse 当前字段值（按 warehouse_id）。"""
+    if not ids:
         return {}
     result: Dict[str, str] = {}
     db = get_db_manager()
     conn = db.get_connection()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            for i in range(0, len(skus), BATCH_SIZE):
-                chunk = list(skus[i : i + BATCH_SIZE])
+            for i in range(0, len(ids), BATCH_SIZE):
+                chunk = list(ids[i : i + BATCH_SIZE])
                 placeholders = ",".join(["%s"] * len(chunk))
                 cur.execute(
-                    f"SELECT product_sku, `{db_col}` AS v FROM `{TABLE}` "
-                    f"WHERE product_sku IN ({placeholders}) AND is_deleted = 0",
+                    f"SELECT `{FIX_DB_COL}`, `{db_col}` AS v FROM `{TABLE}` "
+                    f"WHERE `{FIX_DB_COL}` IN ({placeholders})",
                     chunk,
                 )
                 for row in cur.fetchall():
-                    result[clean_cell(row["product_sku"])] = clean_cell(row.get("v"))
+                    result[clean_cell(row[FIX_DB_COL])] = clean_cell(row.get("v"))
     finally:
         conn.close()
     return result
@@ -159,31 +202,31 @@ def apply_field_updates(
     db_col: str,
     dry_run: bool = False,
 ) -> UpdateStats:
-    """按 SKU 更新 ``product_sku.<db_col>``；仅写入有变化的行。
+    """按 warehouse_id 更新 ``warehouse.<db_col>``；仅写入有变化的行。
 
-    写库前 ``clean_pairs``，确保两端空格/不可见字符不会入库。
+    写库前再次 ``clean_cell``，确保两端空格/不可见字符不会入库。
     """
     pairs = clean_pairs(pairs)
-    stats = UpdateStats(unique_skus=len(pairs))
+    stats = UpdateStats(unique_keys=len(pairs))
     if not pairs:
         return stats
 
     existing = fetch_existing_values(list(pairs.keys()), db_col)
-    to_update: List[Tuple[str, str]] = []  # (value, sku)
-    for sku, value in pairs.items():
-        if sku not in existing:
+    to_update: List[Tuple[str, str]] = []  # (value, warehouse_id)
+    for wid, value in pairs.items():
+        if wid not in existing:
             stats.missing_in_db += 1
             continue
-        if existing[sku] == value:
+        if existing[wid] == value:
             stats.unchanged += 1
             continue
-        to_update.append((value, sku))
+        to_update.append((value, wid))
 
     stats.updated = len(to_update)
     if dry_run or not to_update:
         return stats
 
-    sql = f"UPDATE `{TABLE}` SET `{db_col}` = %s WHERE product_sku = %s AND is_deleted = 0"
+    sql = f"UPDATE `{TABLE}` SET `{db_col}` = %s WHERE `{FIX_DB_COL}` = %s"
     db = get_db_manager()
     conn = db.get_connection()
     try:
@@ -220,9 +263,11 @@ def update_field_from_df(
         field.sheet_col,
         allow_empty=allow_empty,
     )
+    pairs, invalid_skipped = map_field_values(field_key, pairs)
     stats = apply_field_updates(pairs, db_col=field.db_col, dry_run=dry_run)
     stats.sheet_rows = len(df)
     stats.empty_value = empty_skipped
+    stats.invalid_value = invalid_skipped
     return stats
 
 
@@ -232,17 +277,17 @@ def update_fields_from_df(
     *,
     dry_run: bool = False,
     allow_empty: bool = False,
-    skus: Optional[Sequence[str]] = None,
+    warehouse_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, UpdateStats]:
-    """依次更新白名单字段；缺列跳过。``skus`` 非空时仅更新这些 SKU。"""
+    """依次更新白名单字段；缺列跳过。``warehouse_ids`` 非空时仅更新这些仓库ID。"""
     if FIX_SHEET_COL not in df.columns:
         raise KeyError(f"表格缺少列: [{FIX_SHEET_COL}]；实际列={list(df.columns)}")
 
     work = df
-    if skus:
-        work, missing = filter_by_column(df, FIX_SHEET_COL, skus)
+    if warehouse_ids:
+        work, missing = filter_by_column(df, FIX_SHEET_COL, warehouse_ids)
         if missing:
-            print(f"[WARN] 表格中未找到 SKU: {', '.join(missing)}", file=sys.stderr)
+            print(f"[WARN] 表格中未找到仓库ID: {', '.join(missing)}", file=sys.stderr)
         if work.empty:
             print("[WARN] 无匹配行，跳过更新", file=sys.stderr)
             return {}
@@ -260,10 +305,17 @@ def update_fields_from_df(
         if stats.skipped_missing_col:
             print(f"[SKIP] {key}: 表格无列[{field.sheet_col}]", file=sys.stderr)
             continue
+        if stats.invalid_value:
+            print(
+                f"[WARN] {key}: 无法识别的值跳过 {stats.invalid_value} 条"
+                f"（见 FIELD_VALUE_MAP[{key!r}]）",
+                file=sys.stderr,
+            )
         verb = "would_update" if dry_run else "updated"
         print(
             f"[UPDATE] [{field.sheet_col}] → {TABLE}.{field.db_col}  "
-            f"unique={stats.unique_skus} empty_skipped={stats.empty_value} "
+            f"unique={stats.unique_keys} empty_skipped={stats.empty_value} "
+            f"invalid_skipped={stats.invalid_value} "
             f"missing_in_db={stats.missing_in_db} unchanged={stats.unchanged} "
             f"{verb}={stats.updated}"
         )
@@ -289,17 +341,18 @@ def preview_frames(frames: Mapping[str, pd.DataFrame], preview: int) -> None:
 def build_parser() -> argparse.ArgumentParser:
     up_choices = list(UP_FIELD_MAP.keys())
     parser = argparse.ArgumentParser(
-        description="读取钉钉「产品信息」表格，默认回写 product_sku 白名单全部字段",
+        description="读取钉钉「仓库信息」表格，默认回写 warehouse 白名单全部字段",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "匹配键: 仓库ID → warehouse_id\n"
             "默认更新字段:\n  "
             + ", ".join(up_choices)
             + "\n\n示例:\n"
-            "  python app/ding-disk/productInfo.py\n"
-            "  python app/ding-disk/productInfo.py --dry-run\n"
-            "  python app/ding-disk/productInfo.py --up-field supplier_abbr\n"
-            "  python app/ding-disk/productInfo.py --sku XPM0213\n"
-            "  python app/ding-disk/productInfo.py --no-update --preview 20\n"
+            "  python app/ding-disk/warehouse_pull.py --workbook-id <ID>\n"
+            "  python app/ding-disk/warehouse_pull.py --dry-run\n"
+            "  python app/ding-disk/warehouse_pull.py --up-field ops_owner\n"
+            "  python app/ding-disk/warehouse_pull.py --id 237\n"
+            "  python app/ding-disk/warehouse_pull.py --no-update --preview 20\n"
         ),
     )
     parser.add_argument("--workbook-id", default=WORKBOOK_ID, help="表格文档 ID")
@@ -316,11 +369,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", default=None, help="导出 CSV（utf-8-sig）目录")
     parser.add_argument("--raw", action="store_true", help="--list-sheets 时缩进 JSON")
     parser.add_argument(
-        "--sku",
+        "--id",
         action="append",
-        dest="skus",
+        dest="warehouse_ids",
         default=None,
-        help="仅更新指定 SKU（可重复）；默认更新表格中全部 SKU",
+        help="仅更新指定仓库ID（可重复）；默认更新表格中全部行",
     )
     parser.add_argument(
         "--up-field",
@@ -345,6 +398,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         workbook_id = (args.workbook_id or WORKBOOK_ID).strip()
+        if not workbook_id:
+            print(
+                "[FAIL] 未指定表格文档 ID：请设置 WORKBOOK_ID 或传入 --workbook-id",
+                file=sys.stderr,
+            )
+            return 2
+
         wb = Workbook(workbook_id)
         sheets = wb.list_sheets()
 
@@ -373,17 +433,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             field_keys = resolve_up_fields(args.up_fields)
             name, df = next(iter(frames.items()))
             mode = "dry-run" if args.dry_run else "write"
-            sku_hint = f" skus={','.join(args.skus)}" if args.skus else ""
+            id_hint = f" ids={','.join(args.warehouse_ids)}" if args.warehouse_ids else ""
             print(
                 f"[SYNC] sheet={name} fields={','.join(field_keys)}"
-                f"{sku_hint} mode={mode}"
+                f"{id_hint} mode={mode}"
             )
             update_fields_from_df(
                 df,
                 field_keys,
                 dry_run=bool(args.dry_run),
                 allow_empty=bool(args.allow_empty),
-                skus=args.skus,
+                warehouse_ids=args.warehouse_ids,
             )
 
         if args.out_dir:
