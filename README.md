@@ -29,6 +29,9 @@ reportA/
 │   └── M_gross_profit_owner_headers/
 ├── app/                    # 编排入口、HY 派送费试算
 ├── api/hy_oms/             # 鸿羽 OMS SOAP 对接
+├── api/fpx/                # 4PX（递四方）开放平台对接
+├── api/eccang/             # 易仓 ERP 开放平台对接
+├── api/ding_disk/          # 钉钉文档表格（Workbook）对接
 ├── runtime/local/          # 本机费用覆盖 JSON（不入库）
 ├── tools/                  # 独立工具（如 OKR 拆分）
 ├── docs/                   # 模块说明
@@ -104,6 +107,8 @@ python modules/L_shop_rent_allocation/L1_计算月租_合并_分摊_订单统计
 | `M_gross_profit_owner_headers` | 毛利、销售负责人、表头排序 | `run_all_gross_profit.py` |
 | `app/` | 流水线编排、HY 派送费试算 | `run_pipeline`、`delivery_fee_hy` |
 | `api/hy_oms/` | 鸿羽 OMS | `python -m api.hy_oms.smoke_test` |
+| `api/fpx/` | 4PX 开放平台 | `python -m api.fpx.smoke_test` |
+| `api/eccang/` | 易仓 ERP | `python -m api.eccang.cli test` |
 | `tools/` | 独立工具 | `OKR月目标拆分.py` |
 
 ---
@@ -177,6 +182,10 @@ Castorama 类目佣金已迁至 `runtime/local/castorama_commission.json`（F1 /
 | `F:\月目标拆解及跟进\` | Amazon 销售负责人映射 |
 
 **鸿羽 OMS：** 凭证写在 `api/hy_oms/config.py`（`APP_TOKEN` / `APP_KEY`）。
+
+**4PX 开放平台：** 凭证写在 `api/fpx/config.py`（`APP_KEY` / `APP_SECRET`）。直发费用查询见 [开放平台文档](https://open.4px.com/v2/doc/detail?ids=55,88,214)（`ds.xms.order.getFreight`）。
+
+**易仓 ERP：** 凭证写在 `api/eccang/config.py`（`APP_KEY` / `APP_SECRET` / `SERVICE_ID`）。文档见 [易仓开放平台](https://open.eccang.com)。
 
 ---
 
