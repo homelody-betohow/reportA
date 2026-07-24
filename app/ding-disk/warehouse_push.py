@@ -1,7 +1,7 @@
 """将 ``warehouse`` 新增行同步到钉钉「仓库信息」表格（DB → 钉钉追加）。
 
 与 ``warehouse_pull.py`` 方向相反：只处理表格中尚不存在的 ``warehouse_id``，
-按表头列顺序追加整行（含仓库ID、仓库编码与白名单字段）。
+且仅同步 ``warehouse_status >= 0``（排除已废弃 -1），按表头列顺序追加整行。
 
 匹配键::
     warehouse_id  →  仓库ID
@@ -136,7 +136,10 @@ def display_cell(field_key: Optional[str], value: str) -> str:
 def fetch_warehouse_rows(
     warehouse_ids: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """读取 warehouse 行（按 id）；``warehouse_ids`` 非空时仅这些 warehouse_id。"""
+    """读取 warehouse 行（按 id）；仅 ``warehouse_status >= 0``。
+
+    ``warehouse_ids`` 非空时仅这些 warehouse_id。
+    """
     db_cols = [FIX_DB_COL] + [f.db_col for f in UP_FIELD_MAP.values()]
     seen: List[str] = []
     for c in db_cols:
@@ -165,6 +168,7 @@ def fetch_warehouse_rows(
                     cur.execute(
                         f"SELECT {col_sql} FROM `{TABLE}` "
                         f"WHERE `{FIX_DB_COL}` IN ({placeholders}) "
+                        f"AND `warehouse_status` >= 0 "
                         f"ORDER BY id ASC",
                         chunk,
                     )
@@ -173,6 +177,7 @@ def fetch_warehouse_rows(
                 cur.execute(
                     f"SELECT {col_sql} FROM `{TABLE}` "
                     f"WHERE `{FIX_DB_COL}` IS NOT NULL "
+                    f"AND `warehouse_status` >= 0 "
                     f"ORDER BY id ASC"
                 )
                 rows.extend(cur.fetchall())

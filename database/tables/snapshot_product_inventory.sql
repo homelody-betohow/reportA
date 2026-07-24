@@ -13,6 +13,7 @@ CREATE TABLE `snapshot_product_inventory` (
   `warehouse_id` int NOT NULL COMMENT '易仓仓库ID',
   `warehouse_code` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '仓库代码',
   `warehouse_name` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '仓库名称',
+  `warehouse_sku` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '仓库SKU',
   `product_sku` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '产品SKU',
   `product_title` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '产品标题',
   `product_title_en` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '产品标题（英文）',

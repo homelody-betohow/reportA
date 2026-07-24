@@ -41,7 +41,7 @@ PLATFORM_TO_SITE: dict[str, str] = {
 
 def map_platform_to_site(
     main_df: pd.DataFrame,
-    platform_col: str = "平台",
+    platform_col: str = "销售平台",
     result_col: str = "映射站点",
 ) -> pd.DataFrame:
     """
@@ -56,9 +56,9 @@ def map_platform_to_site(
     参数
     ----
     main_df : DataFrame
-        含库存「平台」列的仓租中间表
+        含库存「销售平台」列的仓租中间表
     platform_col : str
-        源列名，默认「平台」
+        源列名，默认「销售平台」
     result_col : str
         写出列名，默认「映射站点」
     """

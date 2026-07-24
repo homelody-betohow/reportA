@@ -43,7 +43,7 @@ main_file_df = apply_castorama_commission_from_json(
     main_file_df, CASTORAMA_COMMISSION_PATH, log_tag="C5"
 )
 
-# 映射 平台费（佣金）、VAT税（仅 DB platform_shop）
+# 映射 平台费（佣金）、VAT税（依据数据表platform_shop设置：佣金费率、VAT费率）
 main_file_df_1 = map_site_vat_commission(
     main_df=main_file_df, site_col='站点', excel_fallback=False
 )
@@ -64,6 +64,16 @@ main_file_df_1.loc[_need_rule, '映射平台费（佣金）'] = _sku_rule.loc[_n
 _rule_hit = int((_need_rule & main_file_df_1['映射平台费（佣金）'].notna()).sum())
 if _rule_hit:
     print(f"{Color.CYAN}[C5] SKU 第4-5位规则兜底：补全 {_rule_hit} 行{Color.RESET}")
+
+# AMAZON-EU / AMAZON-US：SKU 以 E39、E61 开头 → 映射平台费（佣金）= 15%
+_amz_e39_e61 = (
+    main_file_df_1['平台'].isin(['AMAZON-EU', 'AMAZON-US'])
+    & main_file_df_1['SKU'].astype(str).str.startswith(('E39', 'E61'))
+)
+_amz_e39_e61_n = int(_amz_e39_e61.sum())
+if _amz_e39_e61_n:
+    main_file_df_1.loc[_amz_e39_e61, '映射平台费（佣金）'] = 0.15
+    print(f"{Color.CYAN}[C5] AMAZON E39/E61 佣金 15%：覆盖 {_amz_e39_e61_n} 行{Color.RESET}")
 
 main_file_df_2 = main_file_df_1
 

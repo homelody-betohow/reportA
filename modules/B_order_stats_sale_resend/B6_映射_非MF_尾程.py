@@ -4,7 +4,8 @@
 输出：「(已完成-5-1)订单统计-*.xlsx」。
 
 处理逻辑概要：
-1. 筛出「派送运费=0 且 fba费用=0 且 无 transaction-FBA 派送费」的行 → 需要定价映射。
+1. 筛出「派送运费 / fba费用 / transaction-FBA 派送费」均为空或 0 的行 → 需要定价映射
+   （transaction 为 0 与空同等：视为未命中，须走定价表/JSON 回填后再算金额）。
 2. 优先用 DB「goods_delivery_fee」匹配（SKU+仓+国+渠道），dispatch_fee 按 currency 换算为 EUR →「映射-单个-定价派送费」。
 3. 仍未命中的行，再按「派送费-映射分类」用欧洲平台定价表做 SKU→单价映射（跳过含 MF 的分类，MF 由 B5 处理）。
 4. 合并 FBA/HY/4PX 单价列（不覆盖 DB 已命中）→「映射-单个-定价派送费」×「仓库SKU销量」→「映射-定价派送费」。
@@ -607,6 +608,12 @@ def _to_num(s: pd.Series) -> pd.Series:
     )
 
 
+def _fee_absent(s: pd.Series) -> pd.Series:
+    """费用为空或为 0 → 视为未命中（与最终「派送运费」0→nan 约定一致）。"""
+    num = pd.to_numeric(s, errors="coerce")
+    return num.isna() | (num == 0)
+
+
 # ---------------------------------------------------------------------------
 # 主流程（脚本级执行）
 # ---------------------------------------------------------------------------
@@ -617,8 +624,12 @@ main_df = pd.read_excel(main_file_path)
 # 清掉历史「映射尾程-*」列，避免上次跑批残留干扰本次 sku_mappings 写出
 main_df = main_df.drop(columns=[col for col in main_df.columns if col.startswith("映射尾程-")])
 
-# 待映射：派送运费、fba 都为 0，且 transaction 未给出 FBA 派送费（HY/4PX/FBA 仓常见）
-mask = (main_df["派送运费"] == 0) & (main_df["fba费用"] == 0) & (main_df["映射transaction-FBA-派送运费"].isna())
+# 待映射：派送运费 / fba / transaction-FBA 均为空或 0（0 与空同等，须回填单价再计算）
+mask = (
+    _fee_absent(main_df["派送运费"])
+    & _fee_absent(main_df["fba费用"])
+    & _fee_absent(main_df["映射transaction-FBA-派送运费"])
+)
 main_df_map = main_df[mask].copy()
 main_df_not_map = main_df[~mask].copy()
 
@@ -706,9 +717,9 @@ main_df_1[_COL_UNIT_FEE] = prior_unit_fee.where(prior_unit_fee.notna(), excel_un
 
 # 定价表仍未命中 → 用本机 JSON 补单价（仅 need_price_map 且非 MF）
 need_price_map = (
-    (main_df_1["派送运费"].fillna(0) == 0)
-    & (main_df_1["fba费用"].fillna(0) == 0)
-    & (main_df_1["映射transaction-FBA-派送运费"].isna())
+    _fee_absent(main_df_1["派送运费"])
+    & _fee_absent(main_df_1["fba费用"])
+    & _fee_absent(main_df_1["映射transaction-FBA-派送运费"])
 )
 main_df_1 = _apply_non_mf_fees_from_json(main_df_1, NON_MF_FEE_PATH, need_price_map)
 
@@ -728,6 +739,11 @@ fee_cols = [
 for _c in [*fee_cols, "MF-派送费"]:
     if _c in main_df_1.columns:
         main_df_1[_c] = _to_num(main_df_1[_c])
+
+# 参与求和前：费用源里的 0 视为缺失，避免「transaction=0」把本应回填的行算成 0 再被打成空
+for _c in fee_cols:
+    if _c in main_df_1.columns:
+        main_df_1[_c] = main_df_1[_c].replace(0, np.nan)
 
 # MF：沿用 B5 的 MF-派送费；非 MF：四源费用相加
 mask_mf = main_df_1[_COL_FEE_CLASS].astype(str).str.startswith("MF", na=False)

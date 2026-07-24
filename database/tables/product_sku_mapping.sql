@@ -5,8 +5,8 @@
 --
 -- 设计要点：
 --   1. partner_type=platform  ：用 seller_sku   标识平台刊登 SKU
---   2. partner_type=warehouse ：用 warehouse_sku 标识仓储/WMS SKU
---   3. mapping_type=single    ：1 对 1，填写 product_sku；component_info 必须为 NULL
+--   2. partner_type=warehouse ：用 warehouse_sku 标识仓储/WMS SKU；seller_sku 可填自定义编码/Barcode
+--   3. mapping_type=single    ：1 对 1；填写 product_sku（可空=待补全）；component_info 必须为 NULL
 --   4. mapping_type=bundle    ：1 对多（组合品），填写 component_info；product_sku 固定空串
 --   5. 未使用的 SKU 列统一填空串 ''（非 NULL），以便唯一索引与导入去重稳定
 --   6. 站点信息由 shop_hash / market_* 承载；仓库名称由 partner_name 承载，不再单独存 partner_site_code / warehouse_code
@@ -34,11 +34,11 @@ CREATE TABLE `product_sku_mapping` (
   `market_region` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '市场区域（platform 侧从 platform_shop 同步）',
   `market_code` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '市场编码（platform 侧从 platform_shop 同步）',
   `seller_ean` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '平台卖家 EAN（partner_type=platform 时必填）',
-  `seller_sku` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '平台卖家 SKU（partner_type=platform 时必填）',
+  `seller_sku` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '平台卖家 SKU（platform 必填；warehouse 可填自定义编码/Barcode）',
   `warehouse_sku` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '仓储 SKU（partner_type=warehouse 时必填）',
 
   `mapping_type` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'single' COMMENT '映射形态：single=1对1 / bundle=组合品',
-  `product_sku` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '标准产品 SKU（mapping_type=single 时必填；bundle 时固定空串）',
+  `product_sku` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '标准产品 SKU（mapping_type=single 时可空表示待补全；bundle 时固定空串）',
   `component_info` json DEFAULT NULL COMMENT '组合品组件明细（mapping_type=bundle 时必填；single 时必须为 NULL）',
 
   `dev_owner` varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '开发负责人',
@@ -71,10 +71,10 @@ CREATE TABLE `product_sku_mapping` (
   CONSTRAINT `chk_psm_mapping_type` CHECK (`mapping_type` IN ('single', 'bundle')),
   CONSTRAINT `chk_psm_sku_by_partner` CHECK (
     (`partner_type` = 'platform' AND `seller_sku` <> '' AND `warehouse_sku` = '')
-    OR (`partner_type` = 'warehouse' AND `warehouse_sku` <> '' AND `seller_sku` = '')
+    OR (`partner_type` = 'warehouse' AND `warehouse_sku` <> '')
   ),
   CONSTRAINT `chk_psm_mapping_payload` CHECK (
-    (`mapping_type` = 'single' AND `product_sku` <> '' AND `component_info` IS NULL)
+    (`mapping_type` = 'single' AND `component_info` IS NULL)
     OR (`mapping_type` = 'bundle' AND `product_sku` = '' AND `component_info` IS NOT NULL)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='产品SKU映射表（single→product_sku；bundle→component_info）';
