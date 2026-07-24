@@ -136,7 +136,8 @@ class FpxClient:
             data=body.encode("utf-8"),
             headers={
                 "Content-Type": "application/json; charset=utf-8",
-                "Accept": "application/json",
+                # 必须带 charset=utf-8：否则服务端常回 ISO-8859-1，中文被替换成 '?'
+                "Accept": "application/json;charset=utf-8",
             },
             method="POST",
         )
@@ -313,9 +314,28 @@ class FpxClient:
             params["ref_no"] = str(ref_no).strip()
         return self.call("com.basis.billing.getbilling", params, version="1.0.0")
 
-    def get_warehouse_list(self, params: Params = None) -> JsonDict:
-        """查询仓库信息 ``com.basis.warehouse.getlist``。"""
-        return self.call("com.basis.warehouse.getlist", params or {}, version="1.0.0")
+    def get_warehouse_list(
+        self,
+        params: Params = None,
+        *,
+        service_code: Optional[str] = None,
+        country: Optional[str] = None,
+        **extra,
+    ) -> JsonDict:
+        """查询仓库信息 ``com.basis.warehouse.getlist``。
+
+        文档：https://open.4px.com/v2/doc/detail?ids=54,76,153
+
+        ``service_code``：F 订单履约 / S 自发服务 / T 转运服务 / R 退件服务。
+        ``country``：国家二字码。二者均可选。
+        """
+        body: Dict[str, Any] = dict(params or {})
+        if service_code is not None and str(service_code).strip():
+            body["service_code"] = str(service_code).strip().upper()
+        if country is not None and str(country).strip():
+            body["country"] = str(country).strip().upper()
+        body.update(extra)
+        return self.call("com.basis.warehouse.getlist", body or {}, version="1.1.0")
 
     def get_logistics_product_list(self, params: Params = None) -> JsonDict:
         """查询物流产品 ``com.basis.logistics_product.getlist``。"""

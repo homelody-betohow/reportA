@@ -57,7 +57,7 @@ FILE_SUFFIX = "库存动销明细.xlsx"
 _PRODUCT_SKIP_SUM = frozenset({"货值", "海外周转-月", "总库存周转-月"})
 # 商品级汇总时取首行的文本/标识列（非分组键时生效）
 _PRODUCT_FIRST_COLS = (
-    "平台",
+    "销售平台",
     "商品ID",
     "SKU",
     "产品状态",
@@ -136,7 +136,7 @@ _PIVOT_BLANK_LABELS = {
     "运营负责人": "无负责人",
 }
 _PIVOT_SECTIONS = (
-    ("平台", "平台"),
+    ("销售平台", "销售平台"),
     ("产品状态", "产品状态"),
     ("销售负责人", "运营负责人"),  # 表头用销售负责人，数据取运营负责人
 )
@@ -243,10 +243,10 @@ def _fetch_market_turnover(snapshot_date: date) -> pd.DataFrame:
 
 
 def _attach_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """对齐导出列名，并补充 K1/K2 口径：平台、在库（可调拨）。"""
+    """对齐导出列名，并补充 K1/K2 口径：销售平台、在库（可调拨）。"""
     out = df.rename(columns=_RENAME_COLS).copy()
-    if "平台" not in out.columns and "销售市场" in out.columns:
-        out["平台"] = out["销售市场"]
+    if "销售平台" not in out.columns and "销售市场" in out.columns:
+        out["销售平台"] = out["销售市场"]
     if "在库（可调拨）" not in out.columns and "可售库存-可调" in out.columns:
         out["在库（可调拨）"] = out["可售库存-可调"]
     return out
@@ -317,7 +317,7 @@ def _coerce_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def _export_column_order() -> list[str]:
     return [
-        "平台",
+        "销售平台",
         "商品ID",
         "SKU",
         "产品状态",
@@ -340,6 +340,7 @@ def _export_column_order() -> list[str]:
         "总库存",
         "总库存周转-月",
         "供应商",
+        "在库（可调拨）",  # 与可售库存-可调同值，供 K1/K2 仓租分摊
     ]
 
 
@@ -362,7 +363,7 @@ def _build_product_turnover(
     drop_cols: tuple[str, ...] = (),
 ) -> pd.DataFrame:
     """
-    由各平台SKU库存动销明细汇总商品级周转明细：
+    由各销售平台SKU库存动销明细汇总商品级周转明细：
     商品ID 为空 → SKU；按 group_keys 分组，数值列求和（货值除外），周转天数重算。
     """
     drop_set = frozenset(drop_cols)
@@ -489,7 +490,7 @@ def _build_one_pivot_section(
 
 
 def _build_pivot_sections(sku_df: pd.DataFrame) -> list[pd.DataFrame]:
-    """生成三块透视：平台 / 产品状态 / 销售负责人。"""
+    """生成三块透视：销售平台 / 产品状态 / 销售负责人。"""
     return [
         _build_one_pivot_section(sku_df, source_col=src, dim_label=label)
         for label, src in _PIVOT_SECTIONS
@@ -565,9 +566,9 @@ def export_turnover(snapshot_date: date, date_label: str) -> Path:
     if not df.empty:
         df = df[cols]
 
-    by_market_df = _build_product_turnover(df, group_keys=["平台", "商品ID"])
+    by_market_df = _build_product_turnover(df, group_keys=["销售平台", "商品ID"])
     by_product_df = _build_product_turnover(
-        df, group_keys=["商品ID"], drop_cols=("平台",)
+        df, group_keys=["商品ID"], drop_cols=("销售平台",)
     )
     pivot_sections = _build_pivot_sections(df)
 
@@ -588,7 +589,7 @@ def export_turnover(snapshot_date: date, date_label: str) -> Path:
     pivot_rows = sum(max(0, len(s) - 1) for s in pivot_sections)  # 不含总计
     print(
         f"库存动销明细已导出：SKU {len(df)} 行 / "
-        f"各平台商品 {len(by_market_df)} 行 / 商品 {len(by_product_df)} 行 / "
+        f"各销售平台商品 {len(by_market_df)} 行 / 商品 {len(by_product_df)} 行 / "
         f"透视维度行 {pivot_rows}，"
         f"快照日 {snapshot_date}，文件另存为：{output_path}"
     )

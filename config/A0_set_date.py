@@ -30,7 +30,7 @@ folder_name = '日报'
 
 _VALID_FOLDER_NAMES = ('日报', '月报')
 # 日报 获取多少天前的数据
-_X_DAY = 3
+_X_DAY = 4
 
 def _format_md(month, day):
     return f"{month}.{day}"

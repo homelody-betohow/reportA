@@ -457,7 +457,7 @@ class HyOmsClient:
         return self.call("getOrderByRefCode", {"reference_no": reference_no, **extra})
 
     # ------------------------------------------------------------------
-    # 退件（二次上架相关可由此扩展）
+    # 退件
     # ------------------------------------------------------------------
 
     def get_special_orders_list(
@@ -474,3 +474,68 @@ class HyOmsClient:
         p.setdefault("page", 1)
         p.setdefault("pageSize", page_size)
         return self.call("getSpecialOrdersList", p)
+
+    def create_return_bill(
+        self,
+        *,
+        warehouse_code: str,
+        items: Sequence[Mapping[str, Any]],
+        tracking_no: Optional[Union[str, Sequence[str]]] = None,
+        return_type: Optional[str] = None,
+        verify: Optional[Union[int, str]] = None,
+        reference_no: Optional[str] = None,
+        order_code: Optional[str] = None,
+        claim_code: Optional[str] = None,
+        expected_date: Optional[str] = None,
+        return_desc: Optional[str] = None,
+        operation_desc: Optional[str] = None,
+        buyer_name: Optional[str] = None,
+        buyers_ein: Optional[str] = None,
+        seller_store: Optional[str] = None,
+        images: Optional[Sequence[Mapping[str, Any]]] = None,
+        return_identification: Optional[int] = None,
+        sm_code: Optional[str] = None,
+        sender_info: Optional[Mapping[str, Any]] = None,
+        **extra,
+    ) -> JsonDict:
+        """创建退件 ``createReturnBill``。
+
+        标准退件：``tracking_no`` + ``return_type``(S/L/C) + ``items``；
+        ``S`` 需 ``order_code``，``C`` 需 ``claim_code``。
+
+        回邮退件：``return_identification=1``，另需 ``reference_no`` / ``sm_code`` / ``sender_info``。
+
+        成功响应含 ``return_code``（退件单号）。
+        """
+        if not items:
+            raise ValueError("createReturnBill 的 items 不能为空")
+
+        params: Dict[str, Any] = {
+            "warehouse_code": warehouse_code,
+            "items": [dict(x) for x in items],
+            **extra,
+        }
+        if isinstance(tracking_no, (list, tuple)):
+            tracking_no = list(tracking_no)
+        optional = {
+            "tracking_no": tracking_no,
+            "return_type": return_type,
+            "verify": verify,
+            "reference_no": reference_no,
+            "order_code": order_code,
+            "claim_code": claim_code,
+            "expected_date": expected_date,
+            "return_desc": return_desc,
+            "operation_desc": operation_desc,
+            "buyer_name": buyer_name,
+            "buyers_ein": buyers_ein,
+            "seller_store": seller_store,
+            "images": [dict(x) for x in images] if images is not None else None,
+            "return_identification": return_identification,
+            "sm_code": sm_code,
+            "sender_info": dict(sender_info) if sender_info is not None else None,
+        }
+        for key, value in optional.items():
+            if value is not None:
+                params[key] = value
+        return self.call("createReturnBill", params)
