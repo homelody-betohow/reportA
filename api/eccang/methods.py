@@ -63,6 +63,11 @@ class EccangMethods:
     # 文档：https://open.eccang.com/#/documentCenter?docId=112265&catId=0-508-508,0-177
     GET_TRANSACTION_REPORT_DETAIL_LIST = "getTransactionReportDetailList"
 
+    # 财务 SellerSKU 维度利润列表（新）
+    # 文档：https://open.eccang.com/#/documentCenter?docId=112282&catId=0-508-508,0-177
+    # 请求方法：getFinancialSellerSKUReportListNew；biz_content 必填 companyCode/startTime/endTime
+    GET_FINANCIAL_SELLER_SKU_REPORT_LIST_NEW = "getFinancialSellerSKUReportListNew"
+
     # 平台账号（店铺）列表
     # 文档：https://open.eccang.com/#/documentCenter?docId=469&catId=0-226-226,0-177
     # 请求方法：getUserAccountList；biz_content.platform 必填
@@ -321,6 +326,120 @@ class EccangService(EccangClient):
         if extra:
             body.update(extra)
         return self.call(EccangMethods.GET_TRANSACTION_REPORT_DETAIL_LIST, body)
+
+    def get_financial_seller_sku_report_list_new(
+        self,
+        *,
+        company_code: str,
+        start_time: str,
+        end_time: str,
+        page: int = 1,
+        page_size: int = 50,
+        unit_currency: str | None = None,
+        site_list: list[str] | None = None,
+        user_account_list: list[str] | None = None,
+        user_account: str | None = None,
+        time_zone_type: int | None = None,
+        time_type: int | None = None,
+        seller_sku_item_status_list: list[int] | None = None,
+        cost_type: int | None = None,
+        profit_formula_type: int | None = None,
+        search_type: int | None = None,
+        keyword: str | None = None,
+        seller_sku_list: list[str] | None = None,
+        asin_list: list[str] | None = None,
+        parent_asin_list: list[str] | None = None,
+        transaction_status: str | None = None,
+        charge_type: str | None = None,
+        account_skus: list[dict[str, str]] | None = None,
+        system_code: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """获取财务 SellerSKU 维度利润列表（新）。
+
+        文档：docId=112282，interface_method=getFinancialSellerSKUReportListNew。
+        起止时间间隔不能超过 31 天；pageSize 最大 500。
+        报表存分析库，每日约 9 点前 / 14 点前各更新一次，请控制请求频率。
+
+        Args:
+            company_code: 公司代码（必填）
+            start_time: 报表开始时间（yyyy-MM-dd HH:mm:ss）
+            end_time: 报表结束时间（yyyy-MM-dd HH:mm:ss）
+            page: 当前页，默认 1
+            page_size: 每页条数，默认 50，最大 500
+            unit_currency: 币种 ORIGINAL/RMB/USD/EUR/JPY/GBP/CAD/MXN
+            site_list: 站点列表
+            user_account_list: 平台账号列表（别名 userAccounts 亦可经 extra 传入）
+            user_account: 单个平台账号
+            time_zone_type: 时区类型（北京时间 1；站点时间 2，默认 2）
+            time_type: 时间类型（下单时间 1；结算时间 2，默认 2）
+            seller_sku_item_status_list: 销售状态（在售 1；停售 2；下架 3；已删除 4）
+            cost_type: 成本来源（商品成本配置 1；FBA进销存 2；ERP先进先出 4；月末加权 5）
+            profit_formula_type: 利润公式（自定义 1；系统默认 2）
+            search_type: 查询类型（SellerSku 1；子Asin 2；父Asin 3；品牌 6；品类 7；产品名称 10）
+            keyword: 与 search_type 配合的搜索值
+            seller_sku_list / asin_list / parent_asin_list: 多值精确匹配（各最大 100）
+            transaction_status: 交易状态（已发放 / 已推迟）
+            charge_type: 汇率方式（ord / settle）
+            account_skus: [{"userAccount":"...","sellerSku":"..."}, ...]
+            system_code: 系统编码（如 AMAZON_OPERATE）
+            extra: 其他 biz_content 参数
+        """
+        size = min(max(1, page_size), 500)
+        body: dict[str, Any] = {
+            "companyCode": company_code,
+            "startTime": start_time,
+            "endTime": end_time,
+            "page": page,
+            "pageSize": size,
+        }
+        if unit_currency:
+            body["unitCurrency"] = unit_currency
+        if site_list:
+            body["siteList"] = site_list
+        if user_account_list:
+            body["userAccountList"] = user_account_list
+        if user_account:
+            body["userAccount"] = user_account
+        if time_zone_type is not None:
+            body["timeZoneType"] = time_zone_type
+        if time_type is not None:
+            body["timeType"] = time_type
+        if seller_sku_item_status_list:
+            body["sellerSkuItemStatusList"] = seller_sku_item_status_list
+        if cost_type is not None:
+            body["costType"] = cost_type
+        if profit_formula_type is not None:
+            body["profitFormulaType"] = profit_formula_type
+        if search_type is not None:
+            body["searchType"] = search_type
+        if keyword:
+            body["keyword"] = keyword
+        if seller_sku_list:
+            body["sellerSkuList"] = seller_sku_list
+        if asin_list:
+            body["asinList"] = asin_list
+        if parent_asin_list:
+            body["parentAsinList"] = parent_asin_list
+        if transaction_status:
+            body["transactionStatus"] = transaction_status
+        if charge_type:
+            body["chargeType"] = charge_type
+        if account_skus:
+            body["accountSkus"] = account_skus
+        if system_code:
+            body["systemCode"] = system_code
+        if extra:
+            body.update(extra)
+            # 必填字段不被 extra 覆盖丢失
+            body["companyCode"] = company_code
+            body["startTime"] = start_time
+            body["endTime"] = end_time
+        return self.call(
+            EccangMethods.GET_FINANCIAL_SELLER_SKU_REPORT_LIST_NEW,
+            body,
+            version="1.0.0",
+        )
 
     def get_user_account_list(
         self,

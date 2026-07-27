@@ -347,6 +347,59 @@ def write_column_updates(
     return written
 
 
+def write_hyperlink_column_updates(
+    client: DingDiskClient,
+    sheet: str,
+    col_index: int,
+    updates: Sequence[tuple[int, Mapping[str, Any]]],
+    workbook_id: str,
+    *,
+    max_cells: int = MAX_RANGE_CELLS,
+) -> int:
+    """按列写入超链接单元格。
+
+    ``updates`` 为 ``(excel_row_1based, hyperlink_dict)``；
+    ``hyperlink_dict`` 形如 ``{"type":"path","link":url,"text":title}``。
+    同时写入 ``values``（显示文本）与 ``hyperlinks``。
+    """
+    if not updates:
+        return 0
+    if col_index < 0:
+        raise ValueError(f"列索引不能为负: {col_index}")
+
+    ordered = sorted(((int(r), dict(h)) for r, h in updates), key=lambda x: x[0])
+    col_letter = col_to_a1(col_index)
+    rows_limit = _rows_per_write_chunk(1, max_cells=max_cells)
+    written = 0
+    i = 0
+    while i < len(ordered):
+        start_row, link = ordered[i]
+        values_chunk: List[List[Any]] = [[str(link.get("text") or link.get("link") or "")]]
+        links_chunk: List[List[Any]] = [[link]]
+        j = i + 1
+        while (
+            j < len(ordered)
+            and ordered[j][0] == ordered[j - 1][0] + 1
+            and len(values_chunk) < rows_limit
+        ):
+            h = ordered[j][1]
+            values_chunk.append([str(h.get("text") or h.get("link") or "")])
+            links_chunk.append([h])
+            j += 1
+        start_cell = f"{col_letter}{start_row}"
+        range_address = build_a1_range(values_chunk, start_cell=start_cell)
+        client.update_range(
+            sheet,
+            range_address,
+            workbook_id,
+            values=values_chunk,
+            hyperlinks=links_chunk,
+        )
+        written += len(values_chunk)
+        i = j
+    return written
+
+
 def write_values_chunked(
     client: DingDiskClient,
     sheet: str,
@@ -604,6 +657,21 @@ class Workbook:
             self.workbook_id,
         )
 
+    def write_hyperlink_column_updates(
+        self,
+        sheet: str,
+        col_index: int,
+        updates: Sequence[tuple[int, Mapping[str, Any]]],
+    ) -> int:
+        """按列写入超链接 ``(excel_row_1based, {type,link,text})``。"""
+        return write_hyperlink_column_updates(
+            self.client,
+            sheet,
+            col_index,
+            updates,
+            self.workbook_id,
+        )
+
     def write_dataframe(
         self,
         sheet: str,
@@ -672,6 +740,7 @@ __all__ = [
     "used_range_address",
     "used_range_bounds",
     "write_column_updates",
+    "write_hyperlink_column_updates",
     "write_dataframe",
     "write_values_chunked",
     "build_a1_range",

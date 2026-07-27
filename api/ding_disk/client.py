@@ -186,6 +186,62 @@ class DingDiskClient:
             raise DingDiskResponseError("get_user 未返回 result", raw=data)
         return result
 
+    def list_sub_departments(
+        self,
+        dept_id: int = 1,
+        *,
+        language: str = "zh_CN",
+    ) -> List[JsonDict]:
+        """获取下一级子部门 ``topapi/v2/department/listsub``（不含更深层级）。
+
+        文档：https://open.dingtalk.com/document/orgapp/obtain-the-department-list-v2
+        权限：通讯录部门信息读权限（qyapi_get_department_list）。
+        根部门 ``dept_id=1``；家校通讯录部门 ID 为 ``-7``，调用方宜自行剔除。
+        """
+        data = self._oapi_json(
+            "/topapi/v2/department/listsub",
+            body={"dept_id": int(dept_id), "language": language},
+        )
+        result = data.get("result")
+        if result is None:
+            return []
+        if not isinstance(result, list):
+            raise DingDiskResponseError("list_sub_departments 未返回列表", raw=data)
+        return [row for row in result if isinstance(row, dict)]
+
+    def list_department_users(
+        self,
+        dept_id: int,
+        *,
+        cursor: int = 0,
+        size: int = 100,
+        language: str = "zh_CN",
+        contain_access_limit: bool = False,
+        order_field: Optional[str] = None,
+    ) -> JsonDict:
+        """分页获取部门用户详情 ``topapi/v2/user/list``（不含子部门成员）。
+
+        文档：https://open.dingtalk.com/document/orgapp/queries-the-complete-information-of-a-department-user
+        权限：通讯录部门成员读权限（qyapi_get_department_member）。
+        返回 ``result``：``list`` / ``has_more`` / ``next_cursor``。
+        """
+        if size < 1 or size > 100:
+            raise ValueError("size 须在 1～100")
+        body: JsonDict = {
+            "dept_id": int(dept_id),
+            "cursor": int(cursor),
+            "size": int(size),
+            "language": language,
+            "contain_access_limit": bool(contain_access_limit),
+        }
+        if order_field:
+            body["order_field"] = order_field
+        data = self._oapi_json("/topapi/v2/user/list", body=body)
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise DingDiskResponseError("list_department_users 未返回 result", raw=data)
+        return result
+
     def get_userid_by_mobile(self, mobile: str) -> str:
         """根据手机号查 userId ``topapi/v2/user/getbymobile``。
 
@@ -590,17 +646,21 @@ class DingDiskClient:
         workbook_id: Optional[str] = None,
         *,
         values: Optional[CellMatrix] = None,
+        hyperlinks: Optional[Sequence[Sequence[Any]]] = None,
         operator_id: Optional[str] = None,
         **extra: Any,
     ) -> JsonDict:
         """更新单元格区域 ``PUT .../ranges/{rangeAddress}``。
 
-        可写 ``values`` / ``backgroundColors`` / ``fontSizes`` 等，见官方文档。
+        可写 ``values`` / ``hyperlinks`` / ``backgroundColors`` / ``fontSizes`` 等。
+        ``hyperlinks`` 元素形如 ``{"type":"path","link":"https://...","text":"显示名"}``。
         """
         wid = self._workbook(workbook_id)
         body: Dict[str, Any] = dict(extra)
         if values is not None:
             body["values"] = [list(row) for row in values]
+        if hyperlinks is not None:
+            body["hyperlinks"] = [list(row) for row in hyperlinks]
         return self.request(
             "PUT",
             self._range_path(wid, sheet_id, range_address),

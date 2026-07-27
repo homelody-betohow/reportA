@@ -539,3 +539,19 @@ class HyOmsClient:
             if value is not None:
                 params[key] = value
         return self.call("createReturnBill", params)
+
+    def get_return_bill(
+        self,
+        *,
+        return_code: str,
+        **extra,
+    ) -> JsonDict:
+        """获取退件详情 ``getReturnBill``。
+
+        必填 ``return_code``（退件单号）。成功响应 ``data`` 含状态、跟踪号、明细等。
+        """
+        code = str(return_code or "").strip()
+        if not code:
+            raise ValueError("getReturnBill 的 return_code 不能为空")
+        params: Dict[str, Any] = {"return_code": code, **extra}
+        return self.call("getReturnBill", params)
