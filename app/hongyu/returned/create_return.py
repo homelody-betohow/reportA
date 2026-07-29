@@ -826,7 +826,7 @@ def _create_params_from_product(
         "verify": 1,
     }
     optional = {
-        "reference_no": clean_cell(source.get("reference_no")) or None,
+        "reference_no": None,
         "product_title_en": clean_cell(source.get("product_title_en")) or None,
         "contain_battery": _as_optional_int(source.get("contain_battery")),
         "product_declared_name_zh": clean_cell(source.get("product_declared_name_zh"))

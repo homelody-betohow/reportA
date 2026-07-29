@@ -203,7 +203,7 @@ CREATE TABLE `amz_seller_sku_profit_snapshot` (
   `dev_owner` varchar(128) DEFAULT NULL COMMENT '开发负责人',
   `low_price_shop_item_flag` varchar(128) DEFAULT NULL COMMENT '低价店铺商品',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_snapshot_seller_sku` (`snapshot_id`,`snapshot_date`,`seller_sku`),
+  UNIQUE KEY `uk_snapshot_seller_sku_shop` (`snapshot_id`,`snapshot_date`,`seller_sku`,`shop_name`),
   KEY `idx_snapshot` (`snapshot_id`,`snapshot_date`),
   KEY `idx_asin` (`asin`),
   KEY `idx_warehouse_sku` (`warehouse_sku`)

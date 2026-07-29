@@ -1,6 +1,7 @@
 import csv
 import chardet
 import pandas as pd
+import pymysql.cursors
 import importlib.util
 from pathlib import Path
 # 须在 import config/common 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
@@ -12,9 +13,14 @@ _epr_mod.bootstrap(__file__)
 
 from common.sku_mapping import sku_mappings
 from common.platform_shop import map_region_to_platform
+from common.style import Color
 from config.A0_set_date import shared_date, folder_name
 from common.split_rows_data_SKU import split_one_rows_data
 from config.A0_paths import DESKTOP_ROOT
+from database.db_connection import get_db_manager
+
+PRODUCT_SKU_TABLE = "product_sku"
+_KEY_CHUNK = 200
 
 # TODO 文件路径！！！
 otto_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\OTTO\OTTO-广告数据-{shared_date}.csv"
@@ -100,24 +106,86 @@ output_file_path = otto_file_path.rsplit('\\', 1)[0] + '\\(已完成-1)' + otto_
 otto_file_df_1.to_csv(output_file_path, index=False)  # index=False表示不保存索引列
 print(f"处理完成，结果已保存到{output_file_path}")
 
+def _fetch_first_sku_by_uid(uids: list[str]) -> dict[str, str]:
+    """product_uid → 第一个 product_sku（按 id 升序，对齐原 Excel keep='first'）。"""
+    uids = sorted({str(x).strip() for x in uids if x and str(x).strip()})
+    if not uids:
+        return {}
+
+    mapping: dict[str, str] = {}
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            for i in range(0, len(uids), _KEY_CHUNK):
+                chunk = uids[i : i + _KEY_CHUNK]
+                placeholders = ", ".join(["%s"] * len(chunk))
+                sql = f"""
+                    SELECT product_uid, product_sku
+                    FROM `{PRODUCT_SKU_TABLE}`
+                    WHERE product_uid IN ({placeholders})
+                      AND is_deleted = 0
+                      AND product_sku IS NOT NULL
+                      AND TRIM(product_sku) <> ''
+                    ORDER BY id ASC
+                """
+                cur.execute(sql, chunk)
+                for row in cur.fetchall():
+                    uid = str(row.get("product_uid") or "").strip()
+                    sku = str(row.get("product_sku") or "").strip()
+                    if uid and sku and uid not in mapping:
+                        mapping[uid] = sku
+    finally:
+        conn.close()
+    return mapping
+
+
+def map_product_uid_sku_col(main_df: pd.DataFrame, sku_col: str = "SKU") -> pd.DataFrame:
+    """
+    OTTO 部分行 SKU 实为商品ID（product_uid）：映射为首个产品编码。
+    未命中保留原值；带 -NW 时剥后缀查库再缀回。
+    """
+    out = main_df.copy()
+    if sku_col not in out.columns:
+        raise KeyError(f"主表缺少列 {sku_col!r}，当前列: {list(out.columns)}")
+
+    series = out[sku_col].astype(str).str.strip()
+    invalid = series.isin(("", "nan", "None", "NaN")) | out[sku_col].isna()
+    nw_mask = series.str.endswith("-NW", na=False) & ~invalid
+    series_no_nw = series.mask(nw_mask, series.str.replace(r"-NW$", "", regex=True))
+
+    uid_sku_map = _fetch_first_sku_by_uid(series_no_nw[~invalid].tolist())
+    print(f"[DB] product_sku 命中 {len(uid_sku_map)} 条 product_uid → 首个 product_sku")
+
+    mapped = series_no_nw.map(uid_sku_map)
+    miss = (~invalid) & mapped.isna()
+    mapped = mapped.mask(nw_mask & mapped.notna(), mapped.astype(str) + "-NW")
+    mapped = mapped.where(mapped.notna(), out[sku_col])
+    mapped = mapped.mask(invalid, out[sku_col])
+
+    out = out.rename(columns={sku_col: "原-SKU"})
+    insert_pos = out.columns.get_loc("原-SKU") + 1
+    out.insert(insert_pos, sku_col, mapped)
+
+    n_miss = int(miss.sum())
+    if n_miss:
+        preview_cols = [c for c in ("原-SKU", sku_col, "Artikelnummer", "Ausgaben") if c in out.columns]
+        preview = out.loc[miss, preview_cols].head(10)
+        print(
+            f"{Color.YELLOW}[检查] 商品ID 有 {n_miss} 行未命中 product_sku"
+            f"（已保留原 SKU），请核对：{Color.RESET}"
+        )
+        print(preview.to_string(index=False))
+    return out
+
+
 # OTTO 有部分SKU是商品ID，要映射回 第一个 SKU
 # SKU 是否以'25-'开头，分成两个 df
 mask = otto_file_df_1['SKU'].str.startswith('25-')
 df_25 = otto_file_df_1.loc[mask].copy()
 df_other = otto_file_df_1.loc[~mask].copy()
-# 商品ID 去映射 产品信息库 的 第一个 产品编码（SKU）
-product_map_sku_path = r"\\Betohow\数据报表\数据库\产品信息库2025.xlsx"  # 改成对应的映射表
-df_25_1 = sku_mappings(
-    main_df=df_25,
-    main_sku='SKU',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="商品ID",
-    map_new_sku="产品编码",
-    map_sku_sheet='产品信息表'
-)
-# 重命名列
-df_25_1 = df_25_1.rename(columns={'SKU': '原-SKU'})
-df_25_1 = df_25_1.rename(columns={'映射产品编码': 'SKU'})
+# 商品ID → 主产品编码（product_uid → 首个 product_sku）
+df_25_1 = map_product_uid_sku_col(df_25, sku_col="SKU")
 # --- 合并 ---
 otto_file_df_1 = pd.concat([df_25_1, df_other]).sort_index()
 

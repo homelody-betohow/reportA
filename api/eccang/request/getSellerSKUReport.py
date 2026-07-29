@@ -7,13 +7,11 @@ pageSize 最大 500。报表存分析库，约每日 9 点前 / 14 点前更新�
 
 运行（在项目根目录）::
 
-    python -m api.eccang.getFinancialSellerSKUReportList \\
-        --company-code YOUR_CODE \\
+    python api/eccang/request/getSellerSKUReport.py \\
         --start-time "2026-07-01 00:00:00" \\
         --end-time "2026-07-31 23:59:59"
 
-    python -m api.eccang.getFinancialSellerSKUReportList \\
-        --company-code YOUR_CODE \\
+    python api/eccang/request/getSellerSKUReport.py \\
         --start-time "2026-07-01 00:00:00" \\
         --end-time "2026-07-07 23:59:59" \\
         --page 1 --page-size 50 \\
@@ -29,9 +27,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+DEFAULT_COMPANY_CODE = "ERP2009186VG"
+DEFAULT_UNIT_CURRENCY = "EUR"
+DEFAULT_TIME_ZONE_TYPE = 2  # 1=北京时间；2=站点时间
+DEFAULT_TIME_TYPE = 3  # 1=下单时间；2=结算时间；3=Datetime；
+
 
 def _bootstrap() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     epr = root / "ensure_project_root.py"
     spec = importlib.util.spec_from_file_location("ensure_project_root", epr)
     mod = importlib.util.module_from_spec(spec)
@@ -56,17 +59,17 @@ def _parse_int_csv(value: str | None) -> list[int] | None:
 
 def get_financial_seller_sku_report_list(
     *,
-    company_code: str,
+    company_code: str = DEFAULT_COMPANY_CODE,
     start_time: str,
     end_time: str,
     page: int = 1,
     page_size: int = 50,
-    unit_currency: str | None = None,
+    unit_currency: str | None = DEFAULT_UNIT_CURRENCY,
     site_list: list[str] | None = None,
     user_account_list: list[str] | None = None,
     user_account: str | None = None,
-    time_zone_type: int | None = None,
-    time_type: int | None = None,
+    time_zone_type: int | None = DEFAULT_TIME_ZONE_TYPE,
+    time_type: int | None = DEFAULT_TIME_TYPE,
     seller_sku_item_status_list: list[int] | None = None,
     cost_type: int | None = None,
     profit_formula_type: int | None = None,
@@ -125,9 +128,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--company-code",
-        required=True,
+        default=DEFAULT_COMPANY_CODE,
         dest="company_code",
-        help="公司代码（必填，biz_content.companyCode）",
+        help=f"公司代码（biz_content.companyCode），默认 {DEFAULT_COMPANY_CODE}",
     )
     parser.add_argument(
         "--start-time",
@@ -151,8 +154,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--unit-currency",
+        default=DEFAULT_UNIT_CURRENCY,
         dest="unit_currency",
-        help="币种：ORIGINAL/RMB/USD/EUR/JPY/GBP/CAD/MXN",
+        help=f"币种：ORIGINAL/RMB/USD/EUR/JPY/GBP/CAD/MXN，默认 {DEFAULT_UNIT_CURRENCY}",
     )
     parser.add_argument(
         "--site-list",
@@ -172,14 +176,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--time-zone-type",
         type=int,
+        default=DEFAULT_TIME_ZONE_TYPE,
         dest="time_zone_type",
-        help="时区类型：1=北京时间，2=站点时间",
+        help=f"时区类型：1=北京时间，2=站点时间，默认 {DEFAULT_TIME_ZONE_TYPE}",
     )
     parser.add_argument(
         "--time-type",
         type=int,
+        default=DEFAULT_TIME_TYPE,
         dest="time_type",
-        help="时间类型：1=下单时间，2=结算时间",
+        help=f"时间类型：1=下单时间，2=结算时间（接口实测亦接受 3/4），默认 {DEFAULT_TIME_TYPE}",
     )
     parser.add_argument(
         "--seller-sku-status-list",

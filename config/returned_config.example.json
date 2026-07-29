@@ -1,0 +1,17 @@
+{
+  "workbook_id": "EpGBa2Lm8aDaZ57lTwEMk9boJgN7R35y",
+  "label_share_root": "\\\\Betohow\\数据报表\\RPA\\退货标签",
+  "register_sheet": "退件登记表",
+  "label_sheet": "退件标签",
+  "warehouse_code": "DEHY",
+  "sm_code_de": "DEGLS-RMA",
+  "sm_code_other": "DEDHL-RMA",
+  "operation_desc": "买家退件，检查换标上架",
+  "step_delays": {
+    "create_return": 0,
+    "update_return": 35,
+    "download_label": 3,
+    "refresh_return": 5
+  },
+  "comment": "复制为 returned_config.json 后按需修改；CLI --delay / --operation-desc 可覆盖"
+}

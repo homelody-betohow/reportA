@@ -16,14 +16,14 @@ main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已�
 main_file_df = pd.read_excel(main_file_path)
 
 # TODO 文件路径！！！
-guang_gao_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\仓租\FBA仓租\(处理完成)FBA仓租明细{fba_date}.xlsx"
-guang_gao_df = pd.read_excel(guang_gao_path)
+fba_rent_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\仓租\FBA仓租\(处理完成)FBA仓租明细{fba_date}.xlsx"
+fba_rent_df = pd.read_excel(fba_rent_path)
 
 # 以站点商品ID识别码为键进行合并，选择左连接（left join），这样可以确保表1的所有数据都被保留
-result_df = pd.merge(main_file_df, guang_gao_df[['站点商品ID识别码', 'FBA仓租费']], on='站点商品ID识别码', how='left')
+result_df = pd.merge(main_file_df, fba_rent_df[['站点商品ID识别码', 'FBA仓租费']], on='站点商品ID识别码', how='left')
 
 # 找出表2中在表1中不存在的行
-missing_rows = guang_gao_df[~guang_gao_df['站点商品ID识别码'].isin(main_file_df['站点商品ID识别码'])]
+missing_rows = fba_rent_df[~fba_rent_df['站点商品ID识别码'].isin(main_file_df['站点商品ID识别码'])]
 
 # 将这些缺失的行添加到结果中
 result_df = pd.concat([result_df, missing_rows], ignore_index=True)

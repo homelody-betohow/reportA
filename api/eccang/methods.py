@@ -485,8 +485,8 @@ class EccangService(EccangClient):
             site_list: 站点列表
             user_account_list: 平台账号列表（别名 userAccounts 亦可经 extra 传入）
             user_account: 单个平台账号
-            time_zone_type: 时区类型（北京时间 1；站点时间 2，默认 2）
-            time_type: 时间类型（下单时间 1；结算时间 2，默认 2）
+            time_zone_type: 时区类型（北京时间 1；站点时间 2，接口默认多为 2）
+            time_type: 时间类型（下单时间 1；结算时间 2；接口实测亦接受 3/4）
             seller_sku_item_status_list: 销售状态（在售 1；停售 2；下架 3；已删除 4）
             cost_type: 成本来源（商品成本配置 1；FBA进销存 2；ERP先进先出 4；月末加权 5）
             profit_formula_type: 利润公式（自定义 1；系统默认 2）
