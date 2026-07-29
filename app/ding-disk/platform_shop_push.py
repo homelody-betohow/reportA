@@ -1,7 +1,9 @@
-"""将 ``platform_shop`` 新增行同步到钉钉「店铺信息」表格（DB → 钉钉追加）。
+"""将 ``platform_shop`` 同步到钉钉「店铺信息」表格（DB → 钉钉）。
 
-与 ``platform_shop_pull.py`` 方向相反：只处理表格中尚不存在的 ``shop_hash``，
-按表头列顺序追加整行（含店铺编码与白名单字段）。
+与 ``platform_shop_pull.py`` 方向相反，支持两种模式：
+
+1. **追加**（默认）：表格中尚不存在的 ``shop_hash`` 按表头追加整行。
+2. **更新列**：表格已有行按 ``shop_hash`` 对齐，仅回写白名单中有差异的单元格。
 
 匹配键::
     shop_hash  →  店铺编码
@@ -15,9 +17,13 @@
     python app/ding-disk/platform_shop_push.py
     python app/ding-disk/platform_shop_push.py --dry-run
 
-    # 只处理指定店铺编码
-    python app/ding-disk/platform_shop_push.py --hash ecdfa4883185ebf5...
-    python app/ding-disk/platform_shop_push.py --hash ecdfa488... --dry-run --preview 5
+    # 更新已有行的白名单列（全部 / 指定列）
+    python app/ding-disk/platform_shop_push.py --update
+    python app/ding-disk/platform_shop_push.py --up-field store_fees
+    python app/ding-disk/platform_shop_push.py --hash ecdfa488... --up-field vat_rate --dry-run
+
+    # 追加 + 更新可同时进行
+    python app/ding-disk/platform_shop_push.py --append --update
 
     python app/ding-disk/platform_shop_push.py --list-sheets
 """
@@ -30,7 +36,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
 import pymysql.cursors
@@ -48,7 +54,11 @@ _PROJECT_ROOT = _epr_mod.bootstrap(__file__)
 
 from database.db_connection import get_db_manager  # noqa: E402
 from api.ding_disk.exceptions import DingDiskError  # noqa: E402
-from api.ding_disk.workbook import Workbook, clean_cell  # noqa: E402
+from api.ding_disk.workbook import (  # noqa: E402
+    Workbook,
+    clean_cell,
+    filter_by_column,
+)
 
 # 与 platform_shop_pull.py 保持一致
 WORKBOOK_ID = "NZQYprEoWo75xoEDtBqGzKqPW1waOeDk"
@@ -103,6 +113,29 @@ class AppendStats:
     missing_hash_col: bool = False
 
 
+@dataclass
+class UpdateStats:
+    sheet_rows: int = 0
+    unique_keys: int = 0
+    empty_value: int = 0
+    missing_in_db: int = 0
+    unchanged: int = 0
+    updated: int = 0
+    skipped_missing_col: bool = False
+
+
+def resolve_up_fields(keys: Optional[Sequence[str]]) -> List[str]:
+    """解析待更新字段；未指定则返回白名单全部。"""
+    if not keys:
+        return list(UP_FIELD_MAP.keys())
+    unknown = [k for k in keys if k not in UP_FIELD_MAP]
+    if unknown:
+        known = ", ".join(sorted(UP_FIELD_MAP))
+        raise ValueError(f"未知字段 {unknown}；可选: {known}")
+    wanted = set(keys)
+    return [k for k in UP_FIELD_MAP if k in wanted]
+
+
 def _sheet_to_db_col() -> Dict[str, str]:
     """钉钉列名 → DB 列名（含匹配键）。"""
     mapping = {FIX_SHEET_COL: FIX_DB_COL}
@@ -123,6 +156,41 @@ def display_cell(field_key: Optional[str], value: str) -> str:
     if not value_map:
         return value
     return value_map.get(value, value)
+
+
+def fetch_shop_map(
+    hashes: Sequence[str],
+    db_cols: Sequence[str],
+) -> Dict[str, Dict[str, str]]:
+    """批量读取 ``platform_shop`` → ``{shop_hash: {db_col: value}}``。"""
+    if not hashes or not db_cols:
+        return {}
+    seen: List[str] = []
+    for c in db_cols:
+        if c not in seen:
+            seen.append(c)
+    col_sql = ", ".join(f"`{c}`" for c in seen)
+    result: Dict[str, Dict[str, str]] = {}
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            for i in range(0, len(hashes), BATCH_SIZE):
+                chunk = list(hashes[i : i + BATCH_SIZE])
+                placeholders = ",".join(["%s"] * len(chunk))
+                cur.execute(
+                    f"SELECT `{FIX_DB_COL}`, {col_sql} FROM `{TABLE}` "
+                    f"WHERE `{FIX_DB_COL}` IN ({placeholders})",
+                    chunk,
+                )
+                for row in cur.fetchall():
+                    shop_hash = clean_cell(row[FIX_DB_COL])
+                    if not shop_hash:
+                        continue
+                    result[shop_hash] = {c: clean_cell(row.get(c)) for c in seen}
+    finally:
+        conn.close()
+    return result
 
 
 def fetch_shop_rows(hashes: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
@@ -166,6 +234,11 @@ def fetch_shop_rows(hashes: Optional[Sequence[str]] = None) -> List[Dict[str, An
     return rows
 
 
+def _sheet_col_index(df: pd.DataFrame, sheet_col: str) -> int:
+    """DataFrame 列位置 = 钉钉表 0-based 列下标。"""
+    return list(df.columns).index(sheet_col)
+
+
 def sheet_hash_set(df: pd.DataFrame) -> set[str]:
     """表格已有店铺编码集合。"""
     if FIX_SHEET_COL not in df.columns:
@@ -197,6 +270,87 @@ def build_append_dataframe(
             rec[col] = display_cell(field_key, raw)
         records.append(rec)
     return pd.DataFrame(records, columns=list(sheet_columns))
+
+
+def sync_fields_to_sheet(
+    wb: Workbook,
+    sheet: str,
+    df: pd.DataFrame,
+    field_keys: Sequence[str],
+    *,
+    dry_run: bool = False,
+    allow_empty: bool = False,
+    hashes: Optional[Sequence[str]] = None,
+) -> Dict[str, UpdateStats]:
+    """用 DB 值回写钉钉表已有行；按 shop_hash 对齐，仅改有差异的单元格。"""
+    if FIX_SHEET_COL not in df.columns:
+        raise KeyError(f"表格缺少列: [{FIX_SHEET_COL}]；实际列={list(df.columns)}")
+
+    work = df
+    excel_rows: Optional[List[int]] = None
+
+    if hashes:
+        work, missing = filter_by_column(df, FIX_SHEET_COL, hashes)
+        if missing:
+            print(f"[WARN] 表格中未找到店铺编码: {', '.join(missing)}", file=sys.stderr)
+        if work.empty:
+            print("[WARN] 无匹配行，跳过更新", file=sys.stderr)
+            return {}
+        excel_rows = [int(idx) + 2 for idx in work.index.tolist()]
+
+    hash_series = work[FIX_SHEET_COL].map(clean_cell)
+    wanted_hashes = [h for h in hash_series.tolist() if h]
+    db_cols = [UP_FIELD_MAP[k].db_col for k in field_keys]
+    seen_cols: List[str] = []
+    for c in db_cols:
+        if c not in seen_cols:
+            seen_cols.append(c)
+    db_map = fetch_shop_map(wanted_hashes, seen_cols)
+
+    results: Dict[str, UpdateStats] = {}
+    for key in field_keys:
+        field = UP_FIELD_MAP[key]
+        if field.sheet_col not in work.columns:
+            results[key] = UpdateStats(sheet_rows=len(work), skipped_missing_col=True)
+            print(f"[SKIP] {key}: 表格无列[{field.sheet_col}]", file=sys.stderr)
+            continue
+
+        col_idx = _sheet_col_index(df, field.sheet_col)
+        stats = UpdateStats(sheet_rows=len(work), unique_keys=len(set(wanted_hashes)))
+        updates: List[Tuple[int, Any]] = []
+
+        for i, shop_hash in enumerate(hash_series.tolist()):
+            if not shop_hash:
+                continue
+            excel_row = excel_rows[i] if excel_rows is not None else (int(work.index[i]) + 2)
+            sheet_val = clean_cell(work.iloc[i][field.sheet_col])
+            db_row = db_map.get(shop_hash)
+            if db_row is None:
+                stats.missing_in_db += 1
+                continue
+            db_val = display_cell(key, db_row.get(field.db_col, ""))
+            if not db_val and not allow_empty:
+                stats.empty_value += 1
+                continue
+            if db_val == sheet_val:
+                stats.unchanged += 1
+                continue
+            cell_val: Any = db_val if db_val != "" else ""
+            updates.append((excel_row, cell_val))
+
+        stats.updated = len(updates)
+        results[key] = stats
+        verb = "would_update" if dry_run else "updated"
+        print(
+            f"[UPDATE] {TABLE}.{field.db_col} → [{field.sheet_col}]  "
+            f"unique={stats.unique_keys} empty_skipped={stats.empty_value} "
+            f"missing_in_db={stats.missing_in_db} unchanged={stats.unchanged} "
+            f"{verb}={stats.updated}"
+        )
+        if not dry_run and updates:
+            wb.write_column_updates(sheet, col_idx, updates)
+
+    return results
 
 
 def sync_new_rows_to_sheet(
@@ -253,17 +407,22 @@ def sync_new_rows_to_sheet(
 
 
 def build_parser() -> argparse.ArgumentParser:
+    up_choices = list(UP_FIELD_MAP.keys())
     parser = argparse.ArgumentParser(
-        description="将 platform_shop 新增行追加到钉钉「店铺信息」表格（DB → 钉钉）",
+        description="将 platform_shop 同步到钉钉「店铺信息」表格（DB → 钉钉：追加 / 更新列）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "匹配键: shop_hash → 店铺编码\n"
-            "追加列: 店铺编码 + 白名单字段（按表头对齐，未知列留空）\n\n"
-            "示例:\n"
+            "默认：追加库中有、表中无的新行\n"
+            "白名单字段:\n  "
+            + ", ".join(up_choices)
+            + "\n\n示例:\n"
             "  python app/ding-disk/platform_shop_push.py\n"
             "  python app/ding-disk/platform_shop_push.py --dry-run\n"
-            "  python app/ding-disk/platform_shop_push.py --hash <shop_hash>\n"
-            "  python app/ding-disk/platform_shop_push.py --dry-run --preview 10\n"
+            "  python app/ding-disk/platform_shop_push.py --update\n"
+            "  python app/ding-disk/platform_shop_push.py --up-field store_fees\n"
+            "  python app/ding-disk/platform_shop_push.py --hash <shop_hash> --up-field vat_rate\n"
+            "  python app/ding-disk/platform_shop_push.py --append --update --dry-run\n"
         ),
     )
     parser.add_argument("--workbook-id", default=WORKBOOK_ID, help="表格文档 ID")
@@ -275,9 +434,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="hashes",
         default=None,
-        help="仅处理指定店铺编码 shop_hash（可重复）；默认对比库内全部",
+        help="仅处理指定店铺编码 shop_hash（可重复）；默认处理表格/库内全部",
     )
-    parser.add_argument("--dry-run", action="store_true", help="统计待追加行，不写钉钉")
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        default=None,
+        help="追加库中有、表中无的新行（未指定 --update/--up-field 时为默认）",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="更新表格已有行的白名单全部字段",
+    )
+    parser.add_argument(
+        "--up-field",
+        action="append",
+        choices=up_choices,
+        dest="up_fields",
+        default=None,
+        help="只更新指定字段（可重复）；指定即进入更新模式",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="统计变更，不写钉钉")
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="允许用 DB 空值覆盖钉钉单元格（默认跳过空值）",
+    )
     parser.add_argument(
         "--preview",
         type=int,
@@ -314,33 +497,62 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sheet = (args.sheet or "").strip() or DEFAULT_SHEET
         df = wb.read_sheet(sheet, header=True)
 
-        mode = "dry-run" if args.dry_run else "write"
-        hash_hint = f" hashes={','.join(args.hashes)}" if args.hashes else ""
-        print(f"[SYNC] DB→钉钉追加 sheet={sheet}{hash_hint} mode={mode}")
+        do_update = bool(args.update) or bool(args.up_fields)
+        if args.append is not None:
+            do_append = bool(args.append)
+        else:
+            do_append = not do_update
 
-        stats = sync_new_rows_to_sheet(
-            wb,
-            sheet,
-            df,
-            dry_run=bool(args.dry_run),
-            hashes=args.hashes,
-            preview=int(args.preview),
-        )
-
-        if stats.missing_hash_col:
-            print(
-                f"[FAIL] 表格缺少列: [{FIX_SHEET_COL}]；实际列={list(df.columns)}",
-                file=sys.stderr,
-            )
+        if not do_append and not do_update:
+            print("[FAIL] 请指定 --append 和/或 --update（或 --up-field）", file=sys.stderr)
             return 2
 
-        verb = "would_append" if args.dry_run else "appended"
-        print(
-            f"[APPEND] {TABLE} → [{FIX_SHEET_COL}]  "
-            f"db_rows={stats.db_rows} sheet_hashes={stats.sheet_hashes} "
-            f"already_in_sheet={stats.already_in_sheet} "
-            f"to_append={stats.to_append} {verb}={stats.appended if not args.dry_run else stats.to_append}"
-        )
+        mode = "dry-run" if args.dry_run else "write"
+        hash_hint = f" hashes={','.join(args.hashes)}" if args.hashes else ""
+        actions = []
+        if do_append:
+            actions.append("append")
+        if do_update:
+            actions.append("update")
+        print(f"[SYNC] DB→钉钉 sheet={sheet} mode={','.join(actions)} {mode}{hash_hint}")
+
+        if do_update:
+            field_keys = resolve_up_fields(args.up_fields)
+            sync_fields_to_sheet(
+                wb,
+                sheet,
+                df,
+                field_keys,
+                dry_run=bool(args.dry_run),
+                allow_empty=bool(args.allow_empty),
+                hashes=args.hashes,
+            )
+
+        if do_append:
+            stats = sync_new_rows_to_sheet(
+                wb,
+                sheet,
+                df,
+                dry_run=bool(args.dry_run),
+                hashes=args.hashes,
+                preview=int(args.preview),
+            )
+
+            if stats.missing_hash_col:
+                print(
+                    f"[FAIL] 表格缺少列: [{FIX_SHEET_COL}]；实际列={list(df.columns)}",
+                    file=sys.stderr,
+                )
+                return 2
+
+            verb = "would_append" if args.dry_run else "appended"
+            print(
+                f"[APPEND] {TABLE} → [{FIX_SHEET_COL}]  "
+                f"db_rows={stats.db_rows} sheet_hashes={stats.sheet_hashes} "
+                f"already_in_sheet={stats.already_in_sheet} "
+                f"to_append={stats.to_append} "
+                f"{verb}={stats.appended if not args.dry_run else stats.to_append}"
+            )
         return 0
     except DingDiskError as exc:
         print(f"[FAIL] DingDisk: {exc}", file=sys.stderr)

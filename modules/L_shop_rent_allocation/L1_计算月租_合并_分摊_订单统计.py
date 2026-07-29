@@ -12,46 +12,29 @@ _epr_mod.bootstrap(__file__)
 
 from config.A0_set_date import folder_name, shared_date
 from config.A0_paths import DESKTOP_ROOT
+from common.platform_shop import fetch_rent_by_region, fetch_rent_region_keys, map_site_to_rent_region
+from common.style import Color
 
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-18)订单统计-{shared_date}.xlsx"
 main_file_df = pd.read_excel(main_file_path)
 # 删除 仓租 中间计算用的列
 main_file_df.drop(columns=['原-海外仓仓租费', '所有仓库-无平台-需要分摊的费用', '仓租分摊'], inplace=True)
 
-yue_zu_site_path = fr"{DESKTOP_ROOT}\月租总摊分.xlsx"
-yue_zu_site_df = pd.read_excel(yue_zu_site_path, sheet_name='总的-月租')
-# 创建映射字典
-mapping_dict = dict(zip(yue_zu_site_df['站点'], yue_zu_site_df['原-站点']))
+# 月租摊分：数据源 platform_shop（market_region + store_fees，替代原桌面「月租总摊分.xlsx」）
+rent_regions = fetch_rent_region_keys()
+yue_zu_dict = fetch_rent_by_region()
+main_file_df['月租-站点识别'] = map_site_to_rent_region(main_file_df['站点'], rent_regions)
 
-# 映射站点到原-站点，没有映射的保留空值
-main_file_df['月租-站点识别'] = main_file_df['站点'].map(mapping_dict)
-
-# 定义月租的字典，月租是固定的，按照“月租-站点识别”去摊分月租
-# 这里的是 '原-站点'
-yue_zu_dict = {
-    "MANO-DE-OHPAMF": 11.25,
-    "MANO-DE-OHPA": 110,
-    "MANO-FR-OHPAMF": 11.25,
-    "MANO-FR-OHPA": 110,
-    "MANO-FR-OHPA-B2B": 110,
-    "MANO-FR-BTHMF": 45,
-    "MANO-ES-OHPAMF": 11.25,
-    "MANO-IT-OHPAMF": 11.25,
-    "MANO-IT-OHPA": 110,
-    "DLZ-ES": 85.5416,
-    "DLZ-FR": 85.5416,
-    "DLZ-DE": 162.8124,
-    "DLZ-IT": 78.1908,
-    "DLZ-US": 78.1908,
-    "REAL-BTH": 40,
-    "REAL-FB": 40,
-    "LM-TOTO": 39,
-    "LM-BTH": 39,
-    "LM-BC": 39,
-    "LM-RP": 39,
-    "OTTO-BTH": 99.9,
-    "castorama": 39
-}
+if not yue_zu_dict:
+    print(
+        f"{Color.YELLOW}[WARN] platform_shop.store_fees 为空，月租将全部为 0；"
+        f"请先执行 database/alter/update_platform_shop_store_fees.sql{Color.RESET}"
+    )
+else:
+    print(
+        f"{Color.CYAN}[映射] 月租摊分：platform_shop"
+        f"（摊分组 {len(yue_zu_dict)} 个）{Color.RESET}"
+    )
 
 # 按“月租-站点识别”分组，计算每个站点的销量总
 grouped_key = main_file_df.groupby('月租-站点识别')['销量'].sum().reset_index()

@@ -20,10 +20,13 @@ class EccangMethods:
     GET_CARRIER_LIST = "getCarrierList"  # 获取物流商列表
     
     # 订单类接口
-    GET_ORDER_LIST = "getOrderList"  # 获取订单列表
+    GET_ORDER_LIST = "getOrderList"  # 获取订单列表（ERP）
     GET_ORDER_DETAIL = "getOrderDetail"  # 获取订单详情
     CREATE_ORDER = "createOrder"  # 创建订单
     CANCEL_ORDER = "cancelOrder"  # 取消订单
+    # WMS-查询仓储订单信息（docId=735，version=V1.0.0）
+    # https://open.eccang.com/#/documentCenter?docId=735&catId=0-181-181,0-177
+    GET_ORDERS = "getOrders"
     
     # 产品类接口
     GET_PRODUCT_LIST = "getProductList"  # 获取产品列表
@@ -141,6 +144,117 @@ class EccangService(EccangClient):
         if extra:
             body.update(extra)
         return self.call(EccangMethods.GET_ORDER_LIST, body, version="V1.0.0")
+
+    def get_orders(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 10,
+        platform_arr: list[str] | None = None,
+        seller_id_arr: list[str] | None = None,
+        warehouse_id_arr: list[int] | None = None,
+        category: list[int] | None = None,
+        product_barcode_arr: list[str] | None = None,
+        sm_code_arr: list[str] | None = None,
+        country_code_in: list[str] | None = None,
+        code: list[str] | None = None,
+        order_status: str | int | None = None,
+        addressee: str | None = None,
+        buyer_id: list[str] | None = None,
+        buyer_name: str | None = None,
+        buyer_mail: str | None = None,
+        buyer_responsible_id: list[int] | None = None,
+        develop_responsible_id: list[int] | None = None,
+        seller_responsible_id: list[int] | None = None,
+        pay_date_for: str | None = None,
+        pay_date_to: str | None = None,
+        add_date_for: str | None = None,
+        add_date_to: str | None = None,
+        ship_date_for: str | None = None,
+        ship_date_to: str | None = None,
+        print_date_for: str | None = None,
+        print_date_to: str | None = None,
+        pack_date_for: str | None = None,
+        pack_date_to: str | None = None,
+        update_date_for: str | None = None,
+        update_date_to: str | None = None,
+        ec_update_time_for: str | None = None,
+        ec_update_time_to: str | None = None,
+        order_year: int | None = None,
+        order_by: list[str] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """WMS-查询仓储订单信息（docId=735，interface_method=getOrders）。
+
+        Args:
+            page: 当前页，默认 1
+            page_size: 每页条数，默认 10
+            platform_arr: 平台代码列表，如 ["ebay","amazon"]
+            seller_id_arr: 账号列表
+            warehouse_id_arr: 仓库 Id 列表
+            category: 品类 Id 列表
+            product_barcode_arr: SKU 列表
+            sm_code_arr: 运输方式代码列表
+            country_code_in: 国家二字码列表
+            code: 仓库单号 / 参考号 / 跟踪号列表
+            order_status: 订单状态（0删除/1草稿/2确认/3缺货/4已提交/5已打印/7已打包/8已出库）
+            addressee / buyer_name / buyer_mail: 模糊匹配字段
+            *_date_for / *_date_to: 时间区间（YYYY-MM-DD HH:MM:SS）
+            order_year: 历史订单年份（需配合拆表）
+            order_by: 排序，如 ["order_id desc"]
+            extra: 其他 biz_content 参数
+        """
+        size = min(max(1, page_size), 1000)
+        body: dict[str, Any] = {
+            "page": max(1, page),
+            "page_size": size,
+        }
+        optional: dict[str, Any] = {
+            "platform_arr": platform_arr,
+            "seller_id_arr": seller_id_arr,
+            "warehouse_id_arr": warehouse_id_arr,
+            "category": category,
+            "product_barcode_arr": product_barcode_arr,
+            "sm_code_arr": sm_code_arr,
+            "country_code_in": country_code_in,
+            "code": code,
+            "order_status": (
+                str(order_status).strip()
+                if order_status is not None and str(order_status).strip() != ""
+                else None
+            ),
+            "addressee": addressee,
+            "buyer_id": buyer_id,
+            "buyer_name": buyer_name,
+            "buyer_mail": buyer_mail,
+            "buyer_responsible_id": buyer_responsible_id,
+            "develop_responsible_id": develop_responsible_id,
+            "seller_responsible_id": seller_responsible_id,
+            "pay_date_for": pay_date_for,
+            "pay_date_to": pay_date_to,
+            "add_date_for": add_date_for,
+            "add_date_to": add_date_to,
+            "ship_date_for": ship_date_for,
+            "ship_date_to": ship_date_to,
+            "print_date_for": print_date_for,
+            "print_date_to": print_date_to,
+            "pack_date_for": pack_date_for,
+            "pack_date_to": pack_date_to,
+            "update_date_for": update_date_for,
+            "update_date_to": update_date_to,
+            "ec_update_time_for": ec_update_time_for,
+            "ec_update_time_to": ec_update_time_to,
+            "order_year": order_year,
+            "order_by": order_by,
+        }
+        for key, value in optional.items():
+            if value is not None and value != "":
+                body[key] = value
+        if extra:
+            body.update(extra)
+            body["page"] = max(1, page)
+            body["page_size"] = size
+        return self.call(EccangMethods.GET_ORDERS, body, version="V1.0.0")
 
     def get_order_detail(self, order_no: str) -> dict[str, Any]:
         """获取订单详情。

@@ -47,6 +47,8 @@ ehthumbs.db
 .env.*
 !.env.example
 config/db_config.json
+config/returned_config.json
+config/secrets.json
 
 # Logs & temp
 *.log
@@ -54,6 +56,9 @@ config/db_config.json
 *.temp
 tmp/
 temp/
+logs/
+dist/logs/
+runtime/logs/
 
 # Backups
 *.bak
@@ -72,7 +77,6 @@ temp/
 
 # 本机运行时产物（目录用 .gitkeep 占位）
 runtime/local/*.json
-runtime/logs/
 !runtime/local/.gitkeep
 
 # API 文档抓取缓存

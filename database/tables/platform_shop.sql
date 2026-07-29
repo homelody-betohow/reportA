@@ -26,6 +26,7 @@ CREATE TABLE `platform_shop` (
   `commission_rate` decimal(18,6) NOT NULL DEFAULT '0.000000' COMMENT '佣金率（小数，如 0.15 表示 15%）',
   `vat_rate_type` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT 'VAT 税率类型',
   `vat_rate` decimal(18,6) NOT NULL DEFAULT '0.000000' COMMENT 'VAT 税率（小数，如 0.19 表示 19%）',
+  `store_fees` decimal(18,6) NOT NULL DEFAULT '0.000000' COMMENT '月租（按 market_region 摊分到订单）',
   `ops_owner` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT '运营负责人（导入时取自订单 shop_owner）',
   `shop_status` tinyint unsigned NOT NULL DEFAULT '1' COMMENT '状态：1=启用 0=停用（停用则不参与利润计算）',
   `remark` varchar(512) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '备注',

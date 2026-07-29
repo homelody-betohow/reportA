@@ -238,6 +238,109 @@ class HyOmsClient:
             return self.fetch_all("getProductList", params, page_size=page_size)
         return self.call("getProductList", params or {"page": 1, "pageSize": page_size})
 
+    def create_product(
+        self,
+        *,
+        product_sku: str,
+        product_title: str,
+        product_weight: float,
+        product_length: float,
+        product_width: float,
+        product_height: float,
+        product_declared_value: float,
+        product_declared_name: str,
+        reference_no: Optional[str] = None,
+        product_title_en: Optional[str] = None,
+        product_net_weight: Optional[float] = None,
+        contain_battery: Optional[int] = None,
+        battery_type: Optional[str] = None,
+        product_declared_name_zh: Optional[str] = None,
+        hs_code: Optional[str] = None,
+        cat_lang: Optional[str] = None,
+        warning_qty: Optional[int] = None,
+        warning_days: Optional[int] = None,
+        product_brand: Optional[str] = None,
+        product_model: Optional[str] = None,
+        product_origin: Optional[str] = None,
+        product_material: Optional[str] = None,
+        product_use_en: Optional[str] = None,
+        product_material_en: Optional[str] = None,
+        product_desc_url: Optional[str] = None,
+        cat_id_level0: Optional[int] = None,
+        cat_id_level1: Optional[int] = None,
+        cat_id_level2: Optional[int] = None,
+        verify: Optional[int] = None,
+        customer_img: Optional[Mapping[str, Any]] = None,
+        product_color: Optional[str] = None,
+        shared_product: Optional[int] = None,
+        shared_unit_price: Optional[Union[str, float]] = None,
+        product_description: Optional[str] = None,
+        is_box_more_sku: Optional[int] = None,
+        fragile_property: Optional[int] = None,
+        product_size_type: Optional[str] = None,
+        is_batch_tag: Optional[int] = None,
+        ean: Optional[str] = None,
+        ncm: Optional[str] = None,
+        cest: Optional[str] = None,
+        sku_sort_code: Optional[str] = None,
+        is_serialized: Optional[int] = None,
+        **extra,
+    ) -> JsonDict:
+        """创建产品 ``createProduct``。
+
+        必填：SKU、标题、重量、长宽高、申报价值、申报英文名。
+        ``verify``：0/缺省=草稿，1=正式产品。成功响应含 ``product_sku``。
+        """
+        from api.hy_oms.request.create_product import build_params
+
+        params = build_params(
+            product_sku=product_sku,
+            product_title=product_title,
+            product_weight=product_weight,
+            product_length=product_length,
+            product_width=product_width,
+            product_height=product_height,
+            product_declared_value=product_declared_value,
+            product_declared_name=product_declared_name,
+            reference_no=reference_no,
+            product_title_en=product_title_en,
+            product_net_weight=product_net_weight,
+            contain_battery=contain_battery,
+            battery_type=battery_type,
+            product_declared_name_zh=product_declared_name_zh,
+            hs_code=hs_code,
+            cat_lang=cat_lang,
+            warning_qty=warning_qty,
+            warning_days=warning_days,
+            product_brand=product_brand,
+            product_model=product_model,
+            product_origin=product_origin,
+            product_material=product_material,
+            product_use_en=product_use_en,
+            product_material_en=product_material_en,
+            product_desc_url=product_desc_url,
+            cat_id_level0=cat_id_level0,
+            cat_id_level1=cat_id_level1,
+            cat_id_level2=cat_id_level2,
+            verify=verify,
+            customer_img=customer_img,
+            product_color=product_color,
+            shared_product=shared_product,
+            shared_unit_price=shared_unit_price,
+            product_description=product_description,
+            is_box_more_sku=is_box_more_sku,
+            fragile_property=fragile_property,
+            product_size_type=product_size_type,
+            is_batch_tag=is_batch_tag,
+            ean=ean,
+            ncm=ncm,
+            cest=cest,
+            sku_sort_code=sku_sort_code,
+            is_serialized=is_serialized,
+            **extra,
+        )
+        return self.call("createProduct", params)
+
     def get_product_inventory(
         self,
         params: Params = None,
@@ -555,3 +658,123 @@ class HyOmsClient:
             raise ValueError("getReturnBill 的 return_code 不能为空")
         params: Dict[str, Any] = {"return_code": code, **extra}
         return self.call("getReturnBill", params)
+
+    # ------------------------------------------------------------------
+    # 用户 / 模拟登录
+    # ------------------------------------------------------------------
+
+    def log_on(
+        self,
+        *,
+        user_account: Optional[str] = None,
+        user_password: Optional[str] = None,
+        **extra,
+    ) -> JsonDict:
+        """登录 OMS 账户 ``logOn``（模拟登录）。
+
+        成功时 ``data`` 为 URL 编码的快捷登录地址，需 ``urllib.parse.unquote`` 解码后使用。
+        账号/密码缺省时用 ``config.user_account`` / ``config.user_password``。
+        """
+        account = (user_account if user_account is not None else self.config.user_account) or ""
+        password = (user_password if user_password is not None else self.config.user_password) or ""
+        account = str(account).strip()
+        password = str(password).strip()
+        if not account or not password:
+            raise ValueError(
+                "logOn 需要 user_account / user_password："
+                "调用时传入，或在 config/secrets.json 的 hy_oms 中填写 user_account / user_password。"
+            )
+        params: Dict[str, Any] = {
+            "user_account": account,
+            "user_password": password,
+            **extra,
+        }
+        return self.call("logOn", params)
+
+    def get_sso_token(
+        self,
+        *,
+        company_code: Optional[str] = None,
+        **extra,
+    ) -> JsonDict:
+        """获取登陆 token ``getSsoToken``。
+
+        必填 ``company_code``（客户代码）；缺省用 ``config.company_code``。
+        成功时 ``data`` 含 ``userCode`` / ``token``，可拼快捷登录 URL。
+        """
+        code = company_code if company_code is not None else self.config.company_code
+        code = str(code or "").strip()
+        if not code:
+            raise ValueError(
+                "getSsoToken 需要 company_code："
+                "调用时传入，或在 config/secrets.json 的 hy_oms 中填写 company_code。"
+            )
+        params: Dict[str, Any] = {"company_code": code, **extra}
+        return self.call("getSsoToken", params)
+
+    def build_quick_login_url(self, *, user_code: str, token: str) -> str:
+        """拼装 OMS 快捷登录地址 ``/default/index/quick-login``。"""
+        from urllib.parse import urlencode
+
+        user_code = str(user_code or "").strip()
+        token = str(token or "").strip()
+        if not user_code or not token:
+            raise ValueError("build_quick_login_url 需要 user_code 与 token")
+        return f"{self.config.quick_login_path}?{urlencode({'userCode': user_code, 'token': token})}"
+
+    def simulate_login(
+        self,
+        *,
+        user_account: Optional[str] = None,
+        user_password: Optional[str] = None,
+        company_code: Optional[str] = None,
+        mode: str = "logOn",
+        **extra,
+    ) -> JsonDict:
+        """模拟登录，返回含解码后快捷登录 URL 的结果。
+
+        ``mode``::
+            - ``logOn``（默认）：账号密码登录，``data`` 为 URL 编码地址
+            - ``getSsoToken``：按客户代码取 token，再拼快捷登录 URL
+
+        返回 dict 在原始响应基础上增加 ``login_url``（已 urldecode / 拼装）。
+        """
+        from urllib.parse import unquote
+
+        mode_key = str(mode or "logOn").strip().lower().replace("-", "_")
+        if mode_key in {"logon", "log_on", "login"}:
+            result = self.log_on(
+                user_account=user_account,
+                user_password=user_password,
+                **extra,
+            )
+            raw = result.get("data")
+            login_url = unquote(str(raw)) if raw is not None else ""
+            out = dict(result)
+            out["login_url"] = login_url
+            return out
+
+        if mode_key in {"getssotoken", "get_sso_token", "sso", "sso_token"}:
+            result = self.get_sso_token(company_code=company_code, **extra)
+            data = result.get("data") or {}
+            # 部分环境 data 再包一层 {ask, data:{userCode,token}}
+            if isinstance(data, dict) and "userCode" not in data and isinstance(
+                data.get("data"), dict
+            ):
+                data = data["data"]
+            if not isinstance(data, dict):
+                raise HyOmsResponseError("getSsoToken 的 data 不是对象", raw=result)
+            user_code = data.get("userCode") or data.get("user_code") or ""
+            token = data.get("token") or ""
+            login_url = self.build_quick_login_url(
+                user_code=str(user_code), token=str(token)
+            )
+            out = dict(result)
+            out["login_url"] = login_url
+            out["user_code"] = str(user_code)
+            out["token"] = str(token)
+            return out
+
+        raise ValueError(
+            f"simulate_login 不支持的 mode: {mode!r}（可用 logOn / getSsoToken）"
+        )

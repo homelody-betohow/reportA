@@ -12,6 +12,7 @@ platform_shop 统一映射：
   币种 → currency
   平台费（佣金） → commission_rate
   VAT税 → vat_rate
+  月租 → store_fees（按 market_region 摊分到订单）
 """
 from __future__ import annotations
 
@@ -59,6 +60,15 @@ _PLATFORM_SHOP_SQL = """
     FROM platform_shop
     WHERE TRIM(shop_name_en) <> ''
     ORDER BY id ASC
+"""
+
+_PLATFORM_SHOP_RENT_SQL = """
+    SELECT
+        TRIM(market_region) AS market_region,
+        store_fees
+    FROM platform_shop
+    WHERE shop_status = 1
+      AND TRIM(market_region) <> ''
 """
 
 
@@ -147,6 +157,64 @@ def fetch_excel_fee_df(excel_path: str | Path | None = None) -> pd.DataFrame:
     df["market_region"] = df["market_region"].astype(str).str.strip()
     df = df[df["market_region"].notna() & (df["market_region"] != "nan")]
     return df.drop_duplicates(subset=["market_region"], keep="last").reset_index(drop=True)
+
+
+def fetch_rent_by_region() -> dict[str, float]:
+    """market_region → 月租(store_fees)；同站点多行取 MAX（摊分组总额）。"""
+    db = get_db_manager()
+    conn = db.get_connection()
+    cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cur.execute(_PLATFORM_SHOP_RENT_SQL)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    rent: dict[str, float] = {}
+    for row in rows:
+        region = str(row.get("market_region") or "").strip()
+        if not region:
+            continue
+        fee = pd.to_numeric(row.get("store_fees"), errors="coerce")
+        if pd.isna(fee):
+            continue
+        rent[region] = max(rent.get(region, 0.0), float(fee))
+    return rent
+
+
+def fetch_rent_region_keys() -> set[str]:
+    """启用店铺的全部 market_region（用于站点→月租摊分组映射）。"""
+    return {
+        str(r.get("market_region") or "").strip()
+        for r in fetch_platform_shop_rows()
+        if str(r.get("market_region") or "").strip()
+    }
+
+
+def map_site_to_rent_region(
+    sites: pd.Series,
+    rent_regions: set[str] | None = None,
+) -> pd.Series:
+    """
+    订单「站点」→ 月租摊分组(market_region)。
+
+    优先去掉 LM 的 -ls / -xj 后缀再匹配；未命中则尝试原值精确匹配。
+    """
+    regions = rent_regions if rent_regions is not None else fetch_rent_region_keys()
+
+    def _resolve(site: object) -> str | float:
+        text = str(site or "").strip()
+        if not text or text.lower() == "nan":
+            return float("nan")
+        stripped = strip_lm_region_suffix(text)
+        if stripped in regions:
+            return stripped
+        if text in regions:
+            return text
+        return float("nan")
+
+    return sites.map(_resolve)
 
 
 def fetch_platform_shop_rows() -> list[dict]:

@@ -8,9 +8,12 @@
 
 from .client import HyOmsClient
 from .exceptions import HyOmsAuthError, HyOmsError, HyOmsResponseError
+from .web_session import DownloadResult, HyOmsWebSession
 
 __all__ = [
     "HyOmsClient",
+    "HyOmsWebSession",
+    "DownloadResult",
     "HyOmsError",
     "HyOmsAuthError",
     "HyOmsResponseError",

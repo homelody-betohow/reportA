@@ -2,6 +2,7 @@
 MySQL 连接配置与连接池（pymysql + DBUtils）。
 
 配置来源：config/db_config.json（复制 db_config.example.json 后填写）。
+冻结运行时优先读 ``dist/config/db_config.json``（多模块共享）。
 
 用法：
     from database.db_connection import DatabaseConfig, get_db_manager
@@ -26,21 +27,33 @@ from pathlib import Path
 import pymysql
 from dbutils.pooled_db import PooledDB
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config" / "db_config.json"
+from common.dist_paths import default_config_path, resolve_config_file
 
 _manager: DbManager | None = None
+
+
+def default_db_config_path() -> Path:
+    """解析 config/db_config.json：dist/config → exe 旁 config → cwd。"""
+    found = resolve_config_file("db_config.json")
+    if found is not None:
+        return found
+    return default_config_path("db_config.json")
 
 
 class DatabaseConfig:
     """从 config/db_config.json 读取 MySQL 连接参数。"""
 
     def __init__(self, config_path: Path | str | None = None) -> None:
-        path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
+        path = Path(config_path) if config_path else default_db_config_path()
         if not path.is_file():
             raise FileNotFoundError(
                 f"数据库配置文件不存在：{path}\n"
                 "请复制 config/db_config.example.json 为 config/db_config.json 并填写连接信息。"
+                + (
+                    "\n（Windows exe：将 config\\db_config.json 放在 dist\\config\\ 下。）"
+                    if getattr(sys, "frozen", False)
+                    else ""
+                )
             )
         data = json.loads(path.read_text(encoding="utf-8"))
         self.host: str = str(data["host"])
