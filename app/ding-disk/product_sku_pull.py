@@ -88,7 +88,32 @@ UP_FIELD_MAP: Mapping[str, FieldMap] = {
     "amz_lifecycle": FieldMap(sheet_col="AMZ状态", db_col="amz_lifecycle"),
     "local_lifecycle": FieldMap(sheet_col="本土状态", db_col="local_lifecycle"),
     "accounting_class": FieldMap(sheet_col="核算分类", db_col="accounting_class"),
+    
+    "product_unit": FieldMap(sheet_col="单位", db_col="product_unit"),
+    "carton_qty": FieldMap(sheet_col="内箱数量", db_col="carton_qty"),
+    "purchase_moq": FieldMap(sheet_col="最小起定量", db_col="purchase_moq"),
+    "purchase_price": FieldMap(sheet_col="采购价CNY", db_col="purchase_price"),
+    "cost_price_cny": FieldMap(sheet_col="成本价CNY", db_col="cost_price_cny"),
+    "unit_weight_g": FieldMap(sheet_col="单件净重(g)", db_col="unit_weight_g"),
+    "carton_gross_g": FieldMap(sheet_col="外箱毛重(g)", db_col="carton_gross_g"),
+    "inner_box_l_cm": FieldMap(sheet_col="内箱长(cm)", db_col="inner_box_l_cm"),
+    "inner_box_w_cm": FieldMap(sheet_col="内箱宽(cm)", db_col="inner_box_w_cm"),
+    "inner_box_h_cm": FieldMap(sheet_col="内箱高(cm)", db_col="inner_box_h_cm"),
+    "outer_box_l_cm": FieldMap(sheet_col="外箱长(cm)", db_col="outer_box_l_cm"),
+    "outer_box_w_cm": FieldMap(sheet_col="外箱宽(cm)", db_col="outer_box_w_cm"),
+    "outer_box_h_cm": FieldMap(sheet_col="外箱高(cm)", db_col="outer_box_h_cm"),
+
+    "first_leg_eu_au_cny": FieldMap(sheet_col="EU/AU头程运费", db_col="first_leg_eu_au_cny"),
+    "first_leg_us_cny": FieldMap(sheet_col="US头程运费", db_col="first_leg_us_cny"),
+    "first_leg_uk_cny": FieldMap(sheet_col="UK头程运费", db_col="first_leg_uk_cny"),
+    "duty_eu_cny": FieldMap(sheet_col="EU单件关税", db_col="duty_eu_cny"),
+    "duty_us_cny": FieldMap(sheet_col="US单件关税", db_col="duty_us_cny"),
+    "duty_uk_cny": FieldMap(sheet_col="UK单件关税", db_col="duty_uk_cny"),
+
     "ops_model": FieldMap(sheet_col="运营模式", db_col="ops_model"),
+    "ops_tax_rate": FieldMap(sheet_col="运营税率", db_col="ops_tax_rate"),
+    "distribution_lev": FieldMap(sheet_col="是否分销", db_col="distribution_lev"),
+    "is_fitting": FieldMap(sheet_col="是否配件", db_col="is_fitting"),
 }
 
 

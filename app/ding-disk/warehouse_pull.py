@@ -25,7 +25,7 @@ import argparse
 import importlib.util
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -113,6 +113,20 @@ FIELD_VALUE_MAP: Mapping[str, Mapping[str, str]] = {
 }
 
 
+# 自由文本：保留字面量 "None"/"none"（默认 clean_cell 会当成空而跳过）
+PRESERVE_NULLISH_FIELDS = frozenset(
+    {
+        "warehouse_name",
+        "country_code",
+        "provider_code",
+        "market_code",
+        "market_region",
+        "ops_owner",
+        "remark",
+    }
+)
+
+
 @dataclass
 class UpdateStats:
     sheet_rows: int = 0
@@ -123,11 +137,15 @@ class UpdateStats:
     unchanged: int = 0
     updated: int = 0
     skipped_missing_col: bool = False
+    # (warehouse_id, old_value, new_value)
+    changes: List[Tuple[str, str, str]] = field(default_factory=list)
 
 
 def map_field_values(
     field_key: str,
     pairs: Mapping[str, str],
+    *,
+    nullish_as_empty: bool = True,
 ) -> Tuple[Dict[str, str], int]:
     """按 FIELD_VALUE_MAP 转换单元格值；未配置映射则原样返回。
 
@@ -135,10 +153,10 @@ def map_field_values(
     """
     value_map = FIELD_VALUE_MAP.get(field_key)
     if not value_map:
-        return clean_pairs(pairs), 0
+        return clean_pairs(pairs, nullish_as_empty=nullish_as_empty), 0
     mapped: Dict[str, str] = {}
     invalid = 0
-    for key, raw in clean_pairs(pairs).items():
+    for key, raw in clean_pairs(pairs, nullish_as_empty=nullish_as_empty).items():
         if raw in value_map:
             mapped[key] = value_map[raw]
         else:
@@ -172,7 +190,12 @@ def load_frames(
     return {target: wb.read_sheet(target, header=header)}
 
 
-def fetch_existing_values(ids: Sequence[str], db_col: str) -> Dict[str, str]:
+def fetch_existing_values(
+    ids: Sequence[str],
+    db_col: str,
+    *,
+    nullish_as_empty: bool = True,
+) -> Dict[str, str]:
     """批量读取 warehouse 当前字段值（按 warehouse_id）。"""
     if not ids:
         return {}
@@ -190,7 +213,10 @@ def fetch_existing_values(ids: Sequence[str], db_col: str) -> Dict[str, str]:
                     chunk,
                 )
                 for row in cur.fetchall():
-                    result[clean_cell(row[FIX_DB_COL])] = clean_cell(row.get("v"))
+                    result[clean_cell(row[FIX_DB_COL])] = clean_cell(
+                        row.get("v"),
+                        nullish_as_empty=nullish_as_empty,
+                    )
     finally:
         conn.close()
     return result
@@ -201,26 +227,33 @@ def apply_field_updates(
     *,
     db_col: str,
     dry_run: bool = False,
+    nullish_as_empty: bool = True,
 ) -> UpdateStats:
     """按 warehouse_id 更新 ``warehouse.<db_col>``；仅写入有变化的行。
 
     写库前再次 ``clean_cell``，确保两端空格/不可见字符不会入库。
     """
-    pairs = clean_pairs(pairs)
+    pairs = clean_pairs(pairs, nullish_as_empty=nullish_as_empty)
     stats = UpdateStats(unique_keys=len(pairs))
     if not pairs:
         return stats
 
-    existing = fetch_existing_values(list(pairs.keys()), db_col)
+    existing = fetch_existing_values(
+        list(pairs.keys()),
+        db_col,
+        nullish_as_empty=nullish_as_empty,
+    )
     to_update: List[Tuple[str, str]] = []  # (value, warehouse_id)
     for wid, value in pairs.items():
         if wid not in existing:
             stats.missing_in_db += 1
             continue
-        if existing[wid] == value:
+        old = existing[wid]
+        if old == value:
             stats.unchanged += 1
             continue
         to_update.append((value, wid))
+        stats.changes.append((wid, old, value))
 
     stats.updated = len(to_update)
     if dry_run or not to_update:
@@ -257,14 +290,25 @@ def update_field_from_df(
     if FIX_SHEET_COL not in df.columns or field.sheet_col not in df.columns:
         return UpdateStats(sheet_rows=len(df), skipped_missing_col=True)
 
+    nullish_as_empty = field_key not in PRESERVE_NULLISH_FIELDS
     pairs, empty_skipped = kv_pairs_from_df(
         df,
         FIX_SHEET_COL,
         field.sheet_col,
         allow_empty=allow_empty,
+        nullish_as_empty=nullish_as_empty,
     )
-    pairs, invalid_skipped = map_field_values(field_key, pairs)
-    stats = apply_field_updates(pairs, db_col=field.db_col, dry_run=dry_run)
+    pairs, invalid_skipped = map_field_values(
+        field_key,
+        pairs,
+        nullish_as_empty=nullish_as_empty,
+    )
+    stats = apply_field_updates(
+        pairs,
+        db_col=field.db_col,
+        dry_run=dry_run,
+        nullish_as_empty=nullish_as_empty,
+    )
     stats.sheet_rows = len(df)
     stats.empty_value = empty_skipped
     stats.invalid_value = invalid_skipped
@@ -319,6 +363,8 @@ def update_fields_from_df(
             f"missing_in_db={stats.missing_in_db} unchanged={stats.unchanged} "
             f"{verb}={stats.updated}"
         )
+        for wid, old, new in stats.changes:
+            print(f"  [CHANGE] {FIX_SHEET_COL}={wid} {field.db_col}: {old!r} → {new!r}")
     return results
 
 

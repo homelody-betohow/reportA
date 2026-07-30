@@ -97,14 +97,18 @@ def sheet_name(item: SheetRef) -> str:
     return name
 
 
-def normalize_cell(val: Any) -> str:
-    """单元格值规范为字符串：去空白；空/NaN → ``""``；浮点整型去 ``.0``。"""
+def normalize_cell(val: Any, *, nullish_as_empty: bool = True) -> str:
+    """单元格值规范为字符串：去空白；空/NaN → ``""``；浮点整型去 ``.0``。
+
+    ``nullish_as_empty=True``（默认）时，字面量 ``nan``/``none``/``null``（大小写不敏感）
+    也视为空。自由文本字段若需保留 ``None``/``none`` 字面值，传 ``False``。
+    """
     if val is None:
         return ""
     if isinstance(val, float) and pd.isna(val):
         return ""
     text = str(val).strip()
-    if text.lower() in {"nan", "none", "null"}:
+    if nullish_as_empty and text.lower() in {"nan", "none", "null"}:
         return ""
     if isinstance(val, float) and text.endswith(".0"):
         text = text[:-2]
@@ -120,12 +124,12 @@ _EDGE_INVISIBLE = (
 )
 
 
-def clean_cell(val: Any) -> str:
+def clean_cell(val: Any, *, nullish_as_empty: bool = True) -> str:
     """写库/比对前清洗单元格：去两端空白与常见不可见字符。
 
     在 ``normalize_cell`` 基础上再剥零宽空格等，避免肉眼看不见的误输入入库。
     """
-    text = normalize_cell(val)
+    text = normalize_cell(val, nullish_as_empty=nullish_as_empty)
     if not text:
         return ""
     while text and (text[0] in _EDGE_INVISIBLE or text[0].isspace()):
@@ -135,14 +139,18 @@ def clean_cell(val: Any) -> str:
     return text
 
 
-def clean_pairs(pairs: Mapping[str, str]) -> Dict[str, str]:
+def clean_pairs(
+    pairs: Mapping[str, str],
+    *,
+    nullish_as_empty: bool = True,
+) -> Dict[str, str]:
     """清洗键值两端空白；空 key 丢弃，同 key 后者覆盖。"""
     cleaned: Dict[str, str] = {}
     for key, value in pairs.items():
         k = clean_cell(key)
         if not k:
             continue
-        cleaned[k] = clean_cell(value)
+        cleaned[k] = clean_cell(value, nullish_as_empty=nullish_as_empty)
     return cleaned
 
 
@@ -179,15 +187,17 @@ def kv_pairs_from_df(
     value_col: str,
     *,
     allow_empty: bool = False,
+    nullish_as_empty: bool = True,
 ) -> tuple[Dict[str, str], int]:
     """从两列提取 ``{key: value}``（同 key 后者覆盖）。
 
     键值经 ``clean_cell`` 清洗。返回 ``(pairs, empty_value_skipped)``。
     空 key 始终跳过；``allow_empty=False`` 时跳过空 value。
+    ``nullish_as_empty`` 仅作用于 value 列（key 始终折叠 nullish）。
     """
     require_columns(df, [key_col, value_col])
     keys = df[key_col].map(clean_cell)
-    vals = df[value_col].map(clean_cell)
+    vals = df[value_col].map(lambda v: clean_cell(v, nullish_as_empty=nullish_as_empty))
     mask_key = keys.ne("")
     empty_skipped = int((mask_key & vals.eq("")).sum()) if not allow_empty else 0
     keep = mask_key if allow_empty else (mask_key & vals.ne(""))

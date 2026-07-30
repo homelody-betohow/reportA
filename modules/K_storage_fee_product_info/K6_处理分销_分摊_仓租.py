@@ -73,8 +73,13 @@ main_file_df["海外仓仓租费"] = (
     main_file_df["原-海外仓仓租费"].fillna(0) + main_file_df["仓租分摊"]
 )
 
-# 空值的地方——补 0   使 仓租合计  可以正常合计；平台、平台商品ID识别码 不补 0
-_exclude_fill0 = {'平台', '平台商品ID识别码'}
+# 产品状态仍为空（含空串/空白）→ 赋 "--"（须在 fillna(0) 之前，且排除该列）
+_status = main_file_df["产品状态"]
+_empty_status = _status.isna() | _status.astype(str).str.strip().isin(["", "nan", "None"])
+main_file_df.loc[_empty_status, "产品状态"] = "--"
+
+# 空值的地方——补 0   使 仓租合计  可以正常合计；平台、平台商品ID识别码、产品状态 不补 0
+_exclude_fill0 = {'平台', '平台商品ID识别码', '产品状态'}
 _fill0_cols = [c for c in main_file_df.columns if c not in _exclude_fill0]
 main_file_df[_fill0_cols] = main_file_df[_fill0_cols].fillna(0)
 
