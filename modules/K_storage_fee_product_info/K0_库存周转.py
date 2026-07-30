@@ -5,11 +5,11 @@ K0_库存周转.py — 从 snapshot_market_turnover 反向生成库存动销明�
   {DESKTOP_ROOT}\\{folder_name}{shared_date}\\仓租\\{yyyy.m.d}库存动销明细.xlsx
   sheet：
     1. 各平台SKU库存动销明细
-    2. 各平台商品库存周转明细（由 sheet1 按 平台+商品ID 汇总，货值除外）
-    3. 商品库存周转明细（由 sheet1 按 商品ID 汇总，货值除外；不含平台列）
+    2. 各平台商品库存周转明细（由 sheet1 按 平台+商品ID 汇总，单价货值除外）
+    3. 商品库存周转明细（由 sheet1 按 商品ID 汇总，单价货值除外；不含销售平台、销售站点）
     4. 库存周转汇总透视（三块：按平台 / 产品状态 / 销售负责人；含货值×数量）
 
-供 K1/K2 仓租分摊读取（需含列：商品ID、平台、SKU、在库（可调拨））。
+供 K1/K2 仓租分摊读取（需含列：商品ID、销售平台、SKU、可售库存-可调）。
 
 用法：
   python modules/K_storage_fee_product_info/K0_库存周转.py
@@ -53,8 +53,17 @@ SHEET_PRODUCT = "商品ID周转明细"
 SHEET_PIVOT = "库存周转汇总"
 FILE_SUFFIX = "库存动销明细.xlsx"
 
-# 商品级汇总时不求和的列（货值按组取首行；周转天数汇总后重算）
-_PRODUCT_SKIP_SUM = frozenset({"货值", "海外周转-月", "总库存周转-月"})
+# 商品级汇总时不求和的列（单价货值取首行；周转/货值衍生列汇总后重算）
+_PRODUCT_SKIP_SUM = frozenset(
+    {
+        "货值/个",
+        "海外周转-月",
+        "总库存周转-月",
+        "销售货值",
+        "海外库存货值",
+        "海外货值周转",
+    }
+)
 # 商品级汇总时取首行的文本/标识列（非分组键时生效）
 _PRODUCT_FIRST_COLS = (
     "销售平台",
@@ -63,7 +72,7 @@ _PRODUCT_FIRST_COLS = (
     "产品状态",
     "运营经理",
     "运营负责人",
-    "货值",
+    "货值/个",
     "销售站点",
     "供应商",
 )
@@ -80,15 +89,17 @@ _INT_COLS = (
     "总在途库存",
     "总可售库存",
     "参考月销量",
-    "海外库存",
+    "总海外库存",
     "总库存",
-    "在库（可调拨）",
 )
 # 货值、周转天数：浮点
 _FLOAT_COLS = (
-    "货值",
+    "货值/个",
     "海外周转-月",
     "总库存周转-月",
+    "销售货值",
+    "海外库存货值",
+    "海外货值周转",
 )
 # 禁调列：灰白背景
 _DIR_COLS = (
@@ -126,11 +137,17 @@ _PIVOT_QTY_COLS = (
     "在途库存-可调",
     "可售库存-可调",
 )
-_PIVOT_AMOUNT_COLS = (
-    "货值(在途+在库)",  # sum(货值 × 海外库存)
-    "货值(整体库存)",  # sum(货值 × 总库存)
+# 汇总后重算：海外=(D+E+G+H)/B；整体=(C+D+E+F+G+H)/B；B=0 → 0
+_PIVOT_TURN_COLS = (
+    "海外库存周转",
+    "整体库存周转",
 )
-_PIVOT_VALUE_COLS = _PIVOT_QTY_COLS + _PIVOT_AMOUNT_COLS
+_PIVOT_AMOUNT_COLS = (
+    "货值(在途+在库)",  # sum(货值/个 × 总海外库存)
+    "货值(整体库存)",  # sum(货值/个 × 总库存)
+)
+_PIVOT_SUM_COLS = _PIVOT_QTY_COLS + _PIVOT_AMOUNT_COLS
+_PIVOT_VALUE_COLS = _PIVOT_QTY_COLS  + _PIVOT_AMOUNT_COLS + _PIVOT_TURN_COLS
 _PIVOT_BLANK_LABELS = {
     "产品状态": "空白",
     "运营负责人": "无负责人",
@@ -160,7 +177,7 @@ SELECT
     t.ops_leader           AS `运营经理`,
     t.ops_owner            AS `运营负责人`,
     t.supplier_name        AS `供应商`,
-    t.cost_price_cny       AS `货值`,
+    t.cost_price_cny       AS `货值/个`,
 
     t.dir_planned_qty      AS `计划库存-禁调`,
     t.dir_onway_qty        AS `在途库存-禁调`,
@@ -175,7 +192,7 @@ SELECT
     t.total_sellable_qty   AS `总可售库存`,
     t.ref_month_sales_qty  AS `参考月销量`,
     t.market_region        AS `销售站点`,
-    (t.total_onway_qty + t.total_sellable_qty) AS `海外库存`,
+    (t.total_onway_qty + t.total_sellable_qty) AS `总海外库存`,
     (t.total_onway_qty + t.total_sellable_qty) / t.ref_month_sales_qty AS `海外周转-月`,
     (t.total_onway_qty + t.total_sellable_qty + t.total_planned_qty) AS `总库存`,
     (t.total_onway_qty + t.total_sellable_qty + t.total_planned_qty) / t.ref_month_sales_qty AS `总库存周转-月`
@@ -239,17 +256,57 @@ def _fetch_market_turnover(snapshot_date: date) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     df = _attach_legacy_columns(df)
-    return _coerce_numeric_columns(df)
+    df = _coerce_numeric_columns(df)
+    return _compute_value_metrics(df)
 
 
 def _attach_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """对齐导出列名，并补充 K1/K2 口径：销售平台、在库（可调拨）。"""
+    """对齐导出列名，并补充 K1/K2 口径：销售平台。"""
     out = df.rename(columns=_RENAME_COLS).copy()
     if "销售平台" not in out.columns and "销售市场" in out.columns:
         out["销售平台"] = out["销售市场"]
-    if "在库（可调拨）" not in out.columns and "可售库存-可调" in out.columns:
-        out["在库（可调拨）"] = out["可售库存-可调"]
     return out
+
+
+def _compute_value_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    销售货值 = 货值/个 × 参考月销量
+    海外库存货值 = 货值/个 × 总海外库存
+    海外货值周转 = 海外库存货值 / 销售货值（分母为 0 → NaN）
+    """
+    out = df.copy()
+    unit = (
+        pd.to_numeric(out["货值/个"], errors="coerce").fillna(0)
+        if "货值/个" in out.columns
+        else 0
+    )
+    sales = (
+        pd.to_numeric(out["参考月销量"], errors="coerce").fillna(0)
+        if "参考月销量" in out.columns
+        else 0
+    )
+    overseas = (
+        pd.to_numeric(out["总海外库存"], errors="coerce").fillna(0)
+        if "总海外库存" in out.columns
+        else 0
+    )
+    out["销售货值"] = unit * sales
+    out["海外库存货值"] = unit * overseas
+    ref_safe = out["销售货值"].mask(out["销售货值"].eq(0))
+    out["海外货值周转"] = out["海外库存货值"] / ref_safe
+    return out
+
+
+def _put_platform_all_last(
+    df: pd.DataFrame, *, col: str = "销售平台"
+) -> pd.DataFrame:
+    """销售平台 = ALL 的行放到末尾，其余行相对顺序不变。"""
+    if df.empty or col not in df.columns:
+        return df
+    is_all = df[col].astype(str).str.strip().eq("ALL")
+    if not is_all.any():
+        return df
+    return pd.concat([df.loc[~is_all], df.loc[is_all]], ignore_index=True)
 
 
 def _display_width(value) -> int:
@@ -318,12 +375,14 @@ def _coerce_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _export_column_order() -> list[str]:
     return [
         "销售平台",
+        "销售站点",
         "商品ID",
         "SKU",
+        "供应商",
         "产品状态",
         "运营经理",
         "运营负责人",
-        "货值",
+        "参考月销量",
         "计划库存-禁调",
         "在途库存-禁调",
         "可售库存-禁调",
@@ -333,14 +392,14 @@ def _export_column_order() -> list[str]:
         "总计划库存",
         "总在途库存",
         "总可售库存",
-        "参考月销量",
-        "销售站点",
-        "海外库存",
+        "总海外库存",
         "海外周转-月",
         "总库存",
         "总库存周转-月",
-        "供应商",
-        "在库（可调拨）",  # 与可售库存-可调同值，供 K1/K2 仓租分摊
+        "货值/个",
+        "销售货值",
+        "海外库存货值",
+        "海外货值周转",
     ]
 
 
@@ -398,9 +457,9 @@ def _build_product_turnover(
 
     grouped = src.groupby(group_keys, as_index=False, dropna=False).agg(agg)
 
-    # 海外库存 / 总库存：用汇总后分量重算，与分量保持一致
+    # 总海外库存 / 总库存：用汇总后分量重算，与分量保持一致
     if {"总在途库存", "总可售库存"}.issubset(grouped.columns):
-        grouped["海外库存"] = grouped["总在途库存"] + grouped["总可售库存"]
+        grouped["总海外库存"] = grouped["总在途库存"] + grouped["总可售库存"]
     if {"总在途库存", "总可售库存", "总计划库存"}.issubset(grouped.columns):
         grouped["总库存"] = (
             grouped["总在途库存"] + grouped["总可售库存"] + grouped["总计划库存"]
@@ -410,12 +469,13 @@ def _build_product_turnover(
     sales = grouped["参考月销量"] if "参考月销量" in grouped.columns else None
     if sales is not None:
         sales_safe = sales.mask(sales.eq(0))
-        if "海外库存" in grouped.columns:
-            grouped["海外周转-月"] = grouped["海外库存"] / sales_safe
+        if "总海外库存" in grouped.columns:
+            grouped["海外周转-月"] = grouped["总海外库存"] / sales_safe
         if "总库存" in grouped.columns:
             grouped["总库存周转-月"] = grouped["总库存"] / sales_safe
 
     grouped = _coerce_numeric_columns(grouped)
+    grouped = _compute_value_metrics(grouped)
     out_cols = [
         c
         for c in _export_column_order()
@@ -440,10 +500,14 @@ def _prepare_pivot_source(sku_df: pd.DataFrame) -> pd.DataFrame:
             src[col] = 0
         src[col] = pd.to_numeric(src[col], errors="coerce").fillna(0)
 
-    unit_cost = pd.to_numeric(src["货值"], errors="coerce").fillna(0) if "货值" in src.columns else 0
+    unit_cost = (
+        pd.to_numeric(src["货值/个"], errors="coerce").fillna(0)
+        if "货值/个" in src.columns
+        else 0
+    )
 
-    if "海外库存" in src.columns:
-        overseas = pd.to_numeric(src["海外库存"], errors="coerce").fillna(0)
+    if "总海外库存" in src.columns:
+        overseas = pd.to_numeric(src["总海外库存"], errors="coerce").fillna(0)
     else:
         overseas = (
             pd.to_numeric(src.get("总在途库存", 0), errors="coerce").fillna(0)
@@ -462,6 +526,26 @@ def _prepare_pivot_source(sku_df: pd.DataFrame) -> pd.DataFrame:
     return src
 
 
+def _attach_pivot_turnover(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    海外库存周转 = (在途禁调+可售禁调+在途可调+可售可调) / 参考月销量
+    整体库存周转 = (计划禁调+在途禁调+可售禁调+计划可调+在途可调+可售可调) / 参考月销量
+    参考月销量为 0 → 0
+    """
+    out = df.copy()
+    b = pd.to_numeric(out["参考月销量"], errors="coerce").fillna(0)
+    c = pd.to_numeric(out["计划库存-禁调"], errors="coerce").fillna(0)
+    d = pd.to_numeric(out["在途库存-禁调"], errors="coerce").fillna(0)
+    e = pd.to_numeric(out["可售库存-禁调"], errors="coerce").fillna(0)
+    f = pd.to_numeric(out["计划库存-可调"], errors="coerce").fillna(0)
+    g = pd.to_numeric(out["在途库存-可调"], errors="coerce").fillna(0)
+    h = pd.to_numeric(out["可售库存-可调"], errors="coerce").fillna(0)
+    b_safe = b.mask(b.eq(0))
+    out["海外库存周转"] = ((d + e + g + h) / b_safe).fillna(0)
+    out["整体库存周转"] = ((c + d + e + f + g + h) / b_safe).fillna(0)
+    return out
+
+
 def _build_one_pivot_section(
     sku_df: pd.DataFrame,
     *,
@@ -477,15 +561,18 @@ def _build_one_pivot_section(
     blank_label = _PIVOT_BLANK_LABELS.get(source_col, "空白")
     src["_dim"] = _normalize_pivot_dim(src[source_col], blank_label=blank_label)
 
-    sum_cols = {col: "sum" for col in _PIVOT_VALUE_COLS}
+    sum_cols = {col: "sum" for col in _PIVOT_SUM_COLS}
     grouped = src.groupby("_dim", as_index=False, dropna=False).agg(sum_cols)
     grouped = grouped.rename(columns={"_dim": dim_label})
     grouped = grouped.sort_values(by=dim_label, kind="mergesort").reset_index(drop=True)
+    if dim_label == "销售平台":
+        grouped = _put_platform_all_last(grouped, col=dim_label)
 
     total = {dim_label: "总计"}
-    for col in _PIVOT_VALUE_COLS:
+    for col in _PIVOT_SUM_COLS:
         total[col] = pd.to_numeric(grouped[col], errors="coerce").fillna(0).sum()
     out = pd.concat([grouped, pd.DataFrame([total])], ignore_index=True)
+    out = _attach_pivot_turnover(out)
     return out[headers]
 
 
@@ -524,14 +611,16 @@ def _write_pivot_sheet(ws, sections: list[pd.DataFrame]) -> None:
                     val = None
                 elif name in _PIVOT_QTY_COLS and val is not None:
                     val = int(round(float(val)))
-                elif name in _PIVOT_AMOUNT_COLS and val is not None:
-                    val = float(val)
+                elif name in _PIVOT_TURN_COLS or name in _PIVOT_AMOUNT_COLS:
+                    if val is not None:
+                        val = float(val)
                 cell = ws.cell(row=row_cursor, column=col_idx, value=val)
                 cell.font = _TOTAL_FONT if is_total else _BODY_FONT
                 cell.alignment = _BODY_ALIGN
                 cell.border = _THIN_BORDER
-                if name in _PIVOT_AMOUNT_COLS and val is not None:
-                    cell.number_format = "0.00"
+                if name in _PIVOT_TURN_COLS or name in _PIVOT_AMOUNT_COLS:
+                    if val is not None:
+                        cell.number_format = "0.00"
                 elif name in _PIVOT_QTY_COLS and val is not None:
                     cell.number_format = "0"
             row_cursor += 1
@@ -565,10 +654,13 @@ def export_turnover(snapshot_date: date, date_label: str) -> Path:
     cols = [c for c in _export_column_order() if c in df.columns]
     if not df.empty:
         df = df[cols]
+        df = _put_platform_all_last(df)
 
-    by_market_df = _build_product_turnover(df, group_keys=["销售平台", "商品ID"])
+    by_market_df = _put_platform_all_last(
+        _build_product_turnover(df, group_keys=["销售平台", "商品ID"])
+    )
     by_product_df = _build_product_turnover(
-        df, group_keys=["商品ID"], drop_cols=("销售平台",)
+        df, group_keys=["商品ID"], drop_cols=("销售平台", "销售站点")
     )
     pivot_sections = _build_pivot_sections(df)
 

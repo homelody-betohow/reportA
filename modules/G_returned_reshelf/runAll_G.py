@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -26,6 +27,8 @@ from common.runall_utils import (
 # 设置 Windows 控制台编码
 setup_console_encoding()
 
+_PCT_RE = re.compile(r"\((\d+(?:\.\d+)?)%\)")
+
 
 def _is_g1(script_path: Path) -> bool:
     # 判断是否是 G1 这一步（输出需要手动 RPA 查询的内容）
@@ -40,6 +43,27 @@ def _is_g2(script_path: Path) -> bool:
 def _is_g3(script_path: Path) -> bool:
     # 判断是否是 G3 这一步（计算金额和成本，需要检查映射结果）
     return script_path.name.startswith("G3_")
+
+
+def _g1_mapping_all_complete(output: str) -> bool:
+    """G1「映射结果统计」中 合并-映射账号、映射站点 均为 100% 时视为完成。"""
+    if "所有数据都已完成映射" in output:
+        return True
+    rates: list[float] = []
+    for label in ("合并-映射账号", "映射站点"):
+        m = re.search(rf"{re.escape(label)}:\s*\d+/\d+\s*{_PCT_RE.pattern}", output)
+        if not m:
+            return False
+        rates.append(float(m.group(1)))
+    return bool(rates) and all(r >= 100.0 for r in rates)
+
+
+def _g3_purchase_price_all_complete(output: str) -> bool:
+    """G3「映射原始采购价」检查结果为 100% 时视为完成。"""
+    if "映射原始采购价 全部都有" in output:
+        return True
+    m = re.search(rf"映射原始采购价:\s*\d+/\d+\s*{_PCT_RE.pattern}", output)
+    return bool(m) and float(m.group(1)) >= 100.0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -103,33 +127,38 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[runAll_G] ({idx}/{len(scripts)}) 完成：{script.name}")
 
             if _is_g1(script):
-                print(f"\n{Color.YELLOW}{'=' * 80}{Color.RESET}")
-                print(f"{Color.YELLOW}[runAll_G] 重要提示：G1 已完成，请按照上面的提示操作：{Color.RESET}")
-                print(f"{Color.YELLOW}{'=' * 80}{Color.RESET}")
-                print(f"{Color.YELLOW}【需要手动 RPA 查询的位置】{Color.RESET}")
-                print(f"{Color.YELLOW}  - 自发货查询：{Color.RESET}")
-                print(f"    复制上面的「参考号_str」到自发货系统查询")
-                print(f"{Color.YELLOW}  - 订单管理查询：{Color.RESET}")
-                print(f"    复制上面的「订单参考号_str」到订单管理系统查询")
-                print(f"\n{Color.YELLOW}【查询结果保存位置】{Color.RESET}")
-                print(f"  \\\\Betohow\\数据报表\\RPA\\二次上架-数据查询\\自发货")
-                print(f"  \\\\Betohow\\数据报表\\RPA\\二次上架-数据查询\\订单管理")
-                print(f"\n{Color.YELLOW}【操作步骤】{Color.RESET}")
-                print(f"{Color.YELLOW}  1. 复制上面黄色的参考号（自发货）到 RPA 系统查询{Color.RESET}")
-                print(f"{Color.YELLOW}  2. 复制上面黄色的订单参考号（订单管理）到 RPA 系统查询{Color.RESET}")
-                print(f"{Color.YELLOW}  3. 将查询结果保存到上述对应的文件夹中{Color.RESET}")
-                print(f"{Color.YELLOW}  4. 确认文件保存成功后，按回车键继续{Color.RESET}")
-                print(f"{Color.YELLOW}{'=' * 80}{Color.RESET}\n")
-
-                if args.stop_after_g1:
-                    print("[runAll_G] 已执行到 G1，按参数要求停止（请先手动 RPA 查询并保存结果）")
-                    return 0
-                if args.pause_after_g1:
-                    input("[runAll_G] >>> 按回车键继续执行后续步骤...")
+                if _g1_mapping_all_complete(output):
+                    print(
+                        f"{Color.GREEN}[runAll_G] G1 映射结果统计均为 100%，跳过暂停，继续下一步{Color.RESET}"
+                    )
+                    if args.stop_after_g1:
+                        print("[runAll_G] 已执行到 G1，按参数要求停止")
+                        return 0
                 else:
-                    # 默认行为：暂停等待用户确认
+                    print(f"\n{Color.YELLOW}{'=' * 80}{Color.RESET}")
+                    print(f"{Color.YELLOW}[runAll_G] 重要提示：G1 已完成，请按照上面的提示操作：{Color.RESET}")
+                    print(f"{Color.YELLOW}{'=' * 80}{Color.RESET}")
+                    print(f"{Color.YELLOW}【需要手动 RPA 查询的位置】{Color.RESET}")
+                    print(f"{Color.YELLOW}  - 自发货查询：{Color.RESET}")
+                    print(f"    复制上面的「参考号_str」到自发货系统查询")
+                    print(f"{Color.YELLOW}  - 订单管理查询：{Color.RESET}")
+                    print(f"    复制上面的「订单参考号_str」到订单管理系统查询")
+                    print(f"\n{Color.YELLOW}【查询结果保存位置】{Color.RESET}")
+                    print(f"  \\\\Betohow\\数据报表\\RPA\\二次上架-数据查询\\自发货")
+                    print(f"  \\\\Betohow\\数据报表\\RPA\\二次上架-数据查询\\订单管理")
+                    print(f"\n{Color.YELLOW}【操作步骤】{Color.RESET}")
+                    print(f"{Color.YELLOW}  1. 复制上面黄色的参考号（自发货）到 RPA 系统查询{Color.RESET}")
+                    print(f"{Color.YELLOW}  2. 复制上面黄色的订单参考号（订单管理）到 RPA 系统查询{Color.RESET}")
+                    print(f"{Color.YELLOW}  3. 将查询结果保存到上述对应的文件夹中{Color.RESET}")
+                    print(f"{Color.YELLOW}  4. 确认文件保存成功后，按回车键继续{Color.RESET}")
+                    print(f"{Color.YELLOW}{'=' * 80}{Color.RESET}\n")
+
+                    if args.stop_after_g1:
+                        print("[runAll_G] 已执行到 G1，按参数要求停止（请先手动 RPA 查询并保存结果）")
+                        return 0
+                    # 默认 / --pause-after-g1：暂停等待用户确认
                     input("[runAll_G] >>> 按回车键继续执行后续步骤...")
-            
+
             if _is_g2(script):
                 # 从输出中提取文件路径
                 output_file = extract_output_file_path(output, "(已完成-1)鸿羽仓-二次上架明细-*.xlsx")
@@ -158,35 +187,40 @@ def main(argv: list[str] | None = None) -> int:
                     input("[runAll_G] >>> 按回车键继续执行后续步骤...")
             
             if _is_g3(script):
-                # 从输出中提取文件路径
-                output_file = extract_output_file_path(output, "(已完成-2)鸿羽仓-二次上架明细-*.xlsx")
-                
-                print(f"\n{Color.YELLOW}{'=' * 80}{Color.RESET}")
-                print(f"{Color.YELLOW}[runAll_G] 重要提示：G3 已完成（计算金额和成本）{Color.RESET}")
-                print(f"{Color.YELLOW}{'=' * 80}{Color.RESET}")
-                print(f"{Color.YELLOW}【需要检查的文件】{Color.RESET}")
-                print(f"  {output_file}")
-                print(f"\n{Color.YELLOW}【检查内容】{Color.RESET}")
-                print(f"{Color.YELLOW}  1. 打开上述 Excel 文件{Color.RESET}")
-                print(f"{Color.YELLOW}  2. 检查「映射原始采购价」列是否都有数据{Color.RESET}")
-                print(f"{Color.YELLOW}  3. 检查 LM_BC_FR 的「平台sku」列是否都已映射{Color.RESET}")
-                print(f"{Color.YELLOW}  4. 检查「站点」和「SKU-站点识别码」列{Color.RESET}")
-                print(f"\n{Color.YELLOW}【如果发现 LM_BC_FR 平台SKU为空】{Color.RESET}")
-                print(f"{Color.YELLOW}  - 脚本已自动尝试 VLOOKUP 回填（从手动-二次映射.xlsx）{Color.RESET}")
-                print(f"{Color.YELLOW}  - 如仍有空值，需手动在 Excel 中使用 VLOOKUP 补充{Color.RESET}")
-                print(f"    SKU-站点识别码: =VLOOKUP(A列,[手动-二次映射.xlsx]二次上架-LM-BC-自发货!$A:$I,9,FALSE)")
-                print(f"    站点: =VLOOKUP(A列,[手动-二次映射.xlsx]二次上架-LM-BC-自发货!$A:$I,7,FALSE)")
-                print(f"\n{Color.YELLOW}【操作】{Color.RESET}")
-                print(f"{Color.YELLOW}  - 确认数据完整后，按回车键继续{Color.RESET}")
-                print(f"{Color.YELLOW}{'=' * 80}{Color.RESET}\n")
-
-                if args.stop_after_g3:
-                    print("[runAll_G] 已执行到 G3，按参数要求停止（请先检查映射和计算结果）")
-                    return 0
-                if args.pause_after_g3:
-                    input("[runAll_G] >>> 按回车键继续执行后续步骤...")
+                if _g3_purchase_price_all_complete(output):
+                    print(
+                        f"{Color.GREEN}[runAll_G] G3 映射原始采购价均为 100%，跳过暂停，继续下一步{Color.RESET}"
+                    )
+                    if args.stop_after_g3:
+                        print("[runAll_G] 已执行到 G3，按参数要求停止")
+                        return 0
                 else:
-                    # 默认行为：暂停等待用户确认
+                    # 从输出中提取文件路径
+                    output_file = extract_output_file_path(output, "(已完成-2)鸿羽仓-二次上架明细-*.xlsx")
+
+                    print(f"\n{Color.YELLOW}{'=' * 80}{Color.RESET}")
+                    print(f"{Color.YELLOW}[runAll_G] 重要提示：G3 已完成（计算金额和成本）{Color.RESET}")
+                    print(f"{Color.YELLOW}{'=' * 80}{Color.RESET}")
+                    print(f"{Color.YELLOW}【需要检查的文件】{Color.RESET}")
+                    print(f"  {output_file}")
+                    print(f"\n{Color.YELLOW}【检查内容】{Color.RESET}")
+                    print(f"{Color.YELLOW}  1. 打开上述 Excel 文件{Color.RESET}")
+                    print(f"{Color.YELLOW}  2. 检查「映射原始采购价」列是否都有数据{Color.RESET}")
+                    print(f"{Color.YELLOW}  3. 检查 LM_BC_FR 的「平台sku」列是否都已映射{Color.RESET}")
+                    print(f"{Color.YELLOW}  4. 检查「站点」和「SKU-站点识别码」列{Color.RESET}")
+                    print(f"\n{Color.YELLOW}【如果发现 LM_BC_FR 平台SKU为空】{Color.RESET}")
+                    print(f"{Color.YELLOW}  - 脚本已自动尝试 VLOOKUP 回填（从手动-二次映射.xlsx）{Color.RESET}")
+                    print(f"{Color.YELLOW}  - 如仍有空值，需手动在 Excel 中使用 VLOOKUP 补充{Color.RESET}")
+                    print(f"    SKU-站点识别码: =VLOOKUP(A列,[手动-二次映射.xlsx]二次上架-LM-BC-自发货!$A:$I,9,FALSE)")
+                    print(f"    站点: =VLOOKUP(A列,[手动-二次映射.xlsx]二次上架-LM-BC-自发货!$A:$I,7,FALSE)")
+                    print(f"\n{Color.YELLOW}【操作】{Color.RESET}")
+                    print(f"{Color.YELLOW}  - 确认数据完整后，按回车键继续{Color.RESET}")
+                    print(f"{Color.YELLOW}{'=' * 80}{Color.RESET}\n")
+
+                    if args.stop_after_g3:
+                        print("[runAll_G] 已执行到 G3，按参数要求停止（请先检查映射和计算结果）")
+                        return 0
+                    # 默认 / --pause-after-g3：暂停等待用户确认
                     input("[runAll_G] >>> 按回车键继续执行后续步骤...")
             continue
 

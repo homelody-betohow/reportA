@@ -1,7 +1,11 @@
+import importlib.util
+from datetime import date, timedelta
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import importlib.util
-from pathlib import Path
+import pymysql.cursors
+
 # 须在 import config/common 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
 _epr_file = next(p / "ensure_project_root.py" for p in Path(__file__).resolve().parents if (p / "ensure_project_root.py").is_file())
 _spec = importlib.util.spec_from_file_location("ensure_project_root", _epr_file)
@@ -9,18 +13,50 @@ _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
-from config.A0_set_date import shared_date, folder_name, fba_date
 from config.A0_paths import DESKTOP_ROOT
+from config.A0_set_date import folder_name, report_date, shared_date
+from database.db_connection import get_db_manager
+
+RENT_TABLE = "amz_warehouse_rent_snapshot"
+
+
+def resolve_snapshot_month() -> str:
+    """与 A0_set_date.fba_date / V3 快照一致：日报往前 2 月，格式 yyyy-mm。"""
+    months_ago = 2 if folder_name == "日报" else 1
+    start_m = int(shared_date.split("-")[0].split(".")[0])
+    target = date(report_date.year, start_m, 1)
+    for _ in range(months_ago):
+        target = (target.replace(day=1) - timedelta(days=1)).replace(day=1)
+    return f"{target.year:04d}-{target.month:02d}"
+
+
+def fetch_total_fba_fee(snapshot_month: str) -> float:
+    """从 amz_warehouse_rent_snapshot 汇总指定月的仓租（替代 Excel「FBA仓租费」合计）。"""
+    sql = f"""
+        SELECT COALESCE(SUM(`rent_fee`), 0) AS total_fba_fee
+        FROM `{RENT_TABLE}`
+        WHERE `snapshot_month` = %s
+          AND `is_deleted` = 0
+    """
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(sql, (snapshot_month,))
+            row = cur.fetchone() or {}
+            return float(row.get("total_fba_fee") or 0)
+    finally:
+        conn.close()
+
 
 # TODO 文件路径！！！
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-14)订单统计-{shared_date}.xlsx"
 main_file_df = pd.read_excel(main_file_path)
 
-# TODO 文件路径！！！  亚马逊上个月的仓租(实际：上2个月的利润报表)，按天数摊分给日报
-fba_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\仓租\FBA仓租\(处理完成)FBA仓租明细{fba_date}.xlsx"
-fba_file_df = pd.read_excel(fba_file_path)
-# 上个月 总的 FBA仓租费
-total_fba_fee = fba_file_df["FBA仓租费"].sum()
+# 用快照表代替 (处理完成)FBA仓租明细{fba_date}.xlsx；snapshot_month 对齐 fba_date 归属月
+snapshot_month = resolve_snapshot_month()
+total_fba_fee = fetch_total_fba_fee(snapshot_month)
+print(f"snapshot_month={snapshot_month}, total_fba_fee={total_fba_fee}")
 
 # 获取当前月份的天数
 days_in_now_month = pd.Timestamp.now().daysinmonth

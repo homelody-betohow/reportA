@@ -30,7 +30,7 @@ from typing import Any
 DEFAULT_COMPANY_CODE = "ERP2009186VG"
 DEFAULT_UNIT_CURRENCY = "EUR"
 DEFAULT_TIME_ZONE_TYPE = 2  # 1=北京时间；2=站点时间
-DEFAULT_TIME_TYPE = 3  # 1=下单时间；2=结算时间；3=Datetime；
+DEFAULT_TIME_TYPE = 3  # 1=下单时间；2=结算时间；3=Datetime；4=发货时间
 
 
 def _bootstrap() -> None:
