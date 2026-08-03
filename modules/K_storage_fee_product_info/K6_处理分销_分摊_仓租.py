@@ -7,7 +7,7 @@ K6_处理分销_分摊_仓租 — 分销口径收尾 + 无平台仓租分摊（1
 
 【核心处理】
   1. 分销收尾：智慧谷采购成本置 0；分销行运营模式/分类、头程关税派送费
-  2. 将「所有仓库-无平台-需要分摊的费用」总额，平均摊到参与行 →「仓租分摊」
+  2. 将「所有仓库-无平台-需要分摊的费用」总额，按非分销行「平台销售额」占比摊 →「仓租分摊」
   3. 海外仓仓租费 = 原-海外仓仓租费 + 仓租分摊；仓租合计 = FBA仓租费 + 海外仓仓租费
 
 """
@@ -27,6 +27,8 @@ from common.cang_zu_decimal import round_rent, round_rent_series  # noqa: E402
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
 
+_COL_SALES = "平台销售额"
+
 
 def _unallocated_rent_total(df: pd.DataFrame) -> float:
     """K4 写入的无平台仓租总额（通常仅在第 1 行有值）。"""
@@ -34,6 +36,42 @@ def _unallocated_rent_total(df: pd.DataFrame) -> float:
     if col.notna().any():
         return float(round_rent(col[col.notna()].iloc[0]))
     return float(round_rent(col.fillna(0).sum()))
+
+
+def _allocate_unplatform_rent(
+    df: pd.DataFrame, participate: pd.Series, total_cost: float
+) -> pd.Series:
+    """
+    无平台仓租按参与行「平台销售额」占比分摊。
+    销售额权重：数值化后空值/负数按 0；若合计销售额 ≤ 0，回退为按行均摊（保总额）。
+    """
+    alloc = pd.Series(0.0, index=df.index, dtype=float)
+    n = int(participate.sum())
+    if n <= 0 or float(total_cost) == 0.0:
+        return alloc
+
+    if _COL_SALES not in df.columns:
+        raise KeyError(f"订单统计缺少列「{_COL_SALES}」，无法按销售额占比分摊无平台仓租")
+
+    sales = (
+        pd.to_numeric(df.loc[participate, _COL_SALES], errors="coerce")
+        .fillna(0)
+        .clip(lower=0)
+    )
+    sales_sum = float(sales.sum())
+    if sales_sum > 0:
+        alloc.loc[participate] = sales / sales_sum * total_cost
+        print(
+            f"[无平台分摊] 总额={total_cost:.4f}，参与行={n}，"
+            f"平台销售额合计={sales_sum:.4f}（按销售额占比）"
+        )
+    else:
+        alloc.loc[participate] = total_cost / n
+        print(
+            f"[无平台分摊] 总额={total_cost:.4f}，参与行={n}，"
+            f"平台销售额合计=0，回退按行均摊"
+        )
+    return alloc
 
 # TODO 文件路径！！！
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-17)订单统计-{shared_date}.xlsx"
@@ -49,8 +87,7 @@ main_file_df.loc[main_file_df['产品状态'] == '分销', ['运营模式', '二
 # 如果产品状态是“分销”，则将“头程”、“关税”、“派送费”替换为 0
 main_file_df.loc[main_file_df['产品状态'] == '分销', ['头程', '关税', '派送费']] = 0
 
-# 分摊-仓租
-# 参与分摊：非分销；
+# 分摊-仓租：参与分摊 = 非分销；按「平台销售额」占比
 _participate = main_file_df['产品状态'] != '分销'
 # 月报时再排除 MANO-EU（其海外仓仓租已由 ManoRent 统计）
 # if folder_name == '月报':
@@ -58,17 +95,10 @@ _participate = main_file_df['产品状态'] != '分销'
 #     _participate = _participate & ~_mano_eu
 #     print(f'[月报] 忽略 MANO-EU 无平台仓租分摊：排除 {_mano_eu.sum()} 行（MANO 仓租已在 FBA仓租费）')
 
-# 1. 需要分摊的总费用（第 1 行汇总值，避免 sum 重复计）
 total_cost = _unallocated_rent_total(main_file_df)
-# 2. 筛选参与分摊的行
-num_participating = int(_participate.sum())
-# 3. 平均分摊（仓租金额统一保留 4 位小数）
-allocation_per_row = (
-    round_rent(total_cost / num_participating) if num_participating > 0 else 0.0
+main_file_df["仓租分摊"] = _allocate_unplatform_rent(
+    main_file_df, _participate, total_cost
 )
-# 4. 创建新列“仓租分摊”
-main_file_df["仓租分摊"] = 0.0
-main_file_df.loc[_participate, "仓租分摊"] = allocation_per_row
 main_file_df["仓租分摊"] = round_rent_series(main_file_df["仓租分摊"]).fillna(0)
 # 重命名
 main_file_df = main_file_df.rename(columns={"海外仓仓租费": "原-海外仓仓租费"})
