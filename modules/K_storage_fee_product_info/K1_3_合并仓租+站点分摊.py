@@ -1,26 +1,27 @@
 """
-K3_0_合并仓租.py — 合并 HY / 4PX「(平台分摊)」并按订单销量拆到站点
+K1_3_合并仓租+站点分摊.py — 合并 HY / 4PX「(平台分摊)」并按订单销量拆到站点
 
 读取：
   …\\仓租\\4PX\\(平台分摊)4PX-仓租明细.xlsx
   …\\仓租\\鸿羽\\(平台分摊)HY-仓租明细.xlsx
   …\\订单统计\\(已完成-15)订单统计-{shared_date}.xlsx   # J1 日报 / J3 月报产出
+  DB platform_shop：ops_owner=运营负责人 → 平台(market_code)+负责人 允许站点
 
 规则：
-  1. 合并两仓 Sheet「平台分摊」：按「商品ID + 销售平台」汇总「海外仓仓租费」
+  1. 合并两仓 Sheet「平台分摊」：按「商品ID + 销售平台 + 运营负责人」汇总仓租
   2. 销售平台 → 订单统计「平台」（DB market_region→market_code；未命中回填原文）
-  3. 站点分摊（阶梯 D，费用尽量留在该销售平台内）：
-       L1 有「商品ID+平台」站点销量 → 按该商品各站点销量占比
-       L2 否则按「平台内各站点总销量」加权
-       L3 否则该平台下站点均摊
-       L4 否则落到默认主站（PLATFORM_TO_SITE）
+  3. 站点分摊（费用闭包在「平台 + 运营负责人」内，不允许跨负责人）：
+       允许站点 = platform_shop 中 market_code=平台 且 ops_owner=运营负责人 的 market_region
+       L1 该商品在允许站点内有销量 → 按站点销量占比
+       L2 否则按「允许站点」内平台总销量加权（同负责人店铺站点）
+       L4 否则默认主站（PLATFORM_TO_SITE）且主站 ∈ 允许站点
        L5 仍无法落点 →「无平台-仓租费用」
   4. 两仓原「无平台-仓租费用」+ L5 差额，写在结果第 1 行
   5. 写出前去掉「海外仓仓租费」为 0 的行
 
 输出：
   …\\仓租\\(平台分摊)所有-海外仓-仓租明细.xlsx
-    Sheet1 平台分摊：SKU / 商品ID / 平台 / 站点 / 站点商品ID识别码 / 平台商品ID识别码
+    Sheet1 平台分摊：SKU / 商品ID / 运营负责人 / 平台 / 站点 / 识别码
                      / 海外仓仓租费 / 无平台-仓租费用
     Sheet2 无平台-仓租费用：明细 + 合计
 
@@ -28,7 +29,7 @@ K3_0_合并仓租.py — 合并 HY / 4PX「(平台分摊)」并按订单销量�
   python modules/K_storage_fee_product_info/K1_0_HY_仓租.py
   python modules/K_storage_fee_product_info/K1_0_4PX_仓租.py
   python modules/J_amz_storage_fee/daily/J1_计算_AMZ仓租_合并_订单统计.py   # 或月报 J3
-  python modules/K_storage_fee_product_info/K3_0_合并仓租.py
+  python modules/K_storage_fee_product_info/K1_3_合并仓租+站点分摊.py
 """
 
 from __future__ import annotations
@@ -49,8 +50,13 @@ _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
+from common.cang_zu_decimal import round_rent, round_rent_columns, round_rent_series  # noqa: E402
 from common.cang_zu_site import PLATFORM_TO_SITE  # noqa: E402
-from common.platform_shop import map_region_to_platform  # noqa: E402
+from common.platform_shop import (  # noqa: E402
+    fetch_owner_platform_sites,
+    map_region_to_platform,
+    strip_lm_region_suffix,
+)
 from common.style import Color  # noqa: E402
 from config.A0_paths import DESKTOP_ROOT  # noqa: E402
 from config.A0_set_date import folder_name, shared_date  # noqa: E402
@@ -59,6 +65,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl.styles.
 
 SHEET_PLATFORM = "平台分摊"
 SHEET_NO_PLATFORM = "无平台-仓租费用"
+OWNER_COL = "运营负责人"
 _REMAINDER_EPS = 1e-8
 _INVALID_SITES = frozenset({"", "nan", "None", "无", "其他", "ALL"})
 
@@ -92,6 +99,7 @@ OUTPUT_PATH = Path(
 SHEET1_COLUMNS = [
     "SKU",
     "商品ID",
+    "运营负责人",
     "平台",
     "站点",
     "站点商品ID识别码",
@@ -104,6 +112,7 @@ SHEET2_COLUMNS = [
     "SKU",
     "商品ID",
     "销售平台",
+    "运营负责人",
     "无平台-仓租费用",
     "原因",
 ]
@@ -167,6 +176,12 @@ def _read_platform_sheet(path: Path) -> pd.DataFrame:
     missing = [c for c in need if c not in df.columns]
     if missing:
         raise KeyError(f"{path.name} Sheet「{SHEET_PLATFORM}」缺少列 {missing}")
+    if OWNER_COL not in df.columns:
+        print(
+            f"{Color.YELLOW}[检查] {path.name} 无列「{OWNER_COL}」，"
+            f"将按空负责人处理（易进无平台）；请重跑 K1_0_HY / K1_0_4PX{Color.RESET}"
+        )
+        df[OWNER_COL] = ""
     return df
 
 
@@ -196,7 +211,9 @@ def _extract_no_platform_total(platform_df: pd.DataFrame) -> float:
     if "无平台-仓租费用" not in platform_df.columns:
         return 0.0
     return float(
-        pd.to_numeric(platform_df["无平台-仓租费用"], errors="coerce").fillna(0).sum()
+        round_rent(
+            pd.to_numeric(platform_df["无平台-仓租费用"], errors="coerce").fillna(0).sum()
+        )
     )
 
 
@@ -211,14 +228,34 @@ def _default_site_for_platform(platform: str) -> str:
     return site
 
 
+def _site_allowed(site: str, allowed: frozenset[str]) -> bool:
+    """订单站点是否落在允许集合（兼容 LM -ls/-xj 后缀）。"""
+    s = str(site).strip() if site is not None and not pd.isna(site) else ""
+    if not s or s.upper() in _INVALID_SITES:
+        return False
+    if s in allowed:
+        return True
+    base = strip_lm_region_suffix(s)
+    return bool(base) and base in allowed
+
+
+def _filter_sales_by_allowed_sites(
+    sales_df: pd.DataFrame,
+    allowed: frozenset[str],
+) -> pd.DataFrame:
+    if sales_df.empty or not allowed:
+        return sales_df.iloc[0:0].copy()
+    mask = sales_df["站点"].map(lambda s: _site_allowed(s, allowed))
+    return sales_df.loc[mask].copy()
+
+
 def _load_order_dims(
     path: Path,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, list[str]]]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     从 (已完成-15) 提取站点分摊所需维度：
       sku_site_sales  — 商品ID+平台+站点 销量（L1）
-      plat_site_sales — 平台+站点 总销量（L2）
-      plat_sites      — 平台 → 站点列表（L3）
+      plat_site_sales — 平台+站点 总销量（L2，再按负责人允许站点过滤）
     """
     if not path.is_file():
         raise FileNotFoundError(
@@ -258,13 +295,7 @@ def _load_order_dims(
     )
     plat_site_sales = plat_site_sales.loc[plat_site_sales["销量"] > 0].copy()
 
-    plat_sites: dict[str, list[str]] = {}
-    for plat, grp in out.groupby("平台", dropna=False):
-        sites = sorted({s for s in grp["站点"].tolist() if s})
-        if sites:
-            plat_sites[str(plat)] = sites
-
-    return sku_site_sales, plat_site_sales, plat_sites
+    return sku_site_sales, plat_site_sales
 
 
 def _split_fee_by_weights(
@@ -275,8 +306,9 @@ def _split_fee_by_weights(
     weight_col: str = "销量",
 ) -> pd.DataFrame:
     """按权重把海外仓仓租费拆到站点；weights 需含 on_keys + 站点 + weight_col。"""
+    out_cols = ["SKU", "商品ID", OWNER_COL, "平台", "站点", "海外仓仓租费"]
     if rent_rows.empty or weights.empty:
-        return pd.DataFrame(columns=["SKU", "商品ID", "平台", "站点", "海外仓仓租费"])
+        return pd.DataFrame(columns=out_cols)
 
     tot = (
         weights.groupby(on_keys, as_index=False, dropna=False)[weight_col]
@@ -289,41 +321,67 @@ def _split_fee_by_weights(
     merged = rent_rows.merge(w[on_keys + ["站点", "_占比"]], on=on_keys, how="left")
     merged["_占比"] = pd.to_numeric(merged["_占比"], errors="coerce")
     ok = merged["站点"].notna() & merged["_占比"].notna()
-    out = merged.loc[ok, ["SKU", "商品ID", "平台", "站点"]].copy()
-    out["海外仓仓租费"] = (
-        merged.loc[ok, "海外仓仓租费"].to_numpy() * merged.loc[ok, "_占比"].to_numpy()
+    keep = ["SKU", "商品ID", OWNER_COL, "平台", "站点"]
+    for c in keep:
+        if c not in merged.columns:
+            merged[c] = ""
+    out = merged.loc[ok, keep].copy()
+    out["海外仓仓租费"] = round_rent_series(
+        pd.Series(
+            merged.loc[ok, "海外仓仓租费"].to_numpy()
+            * merged.loc[ok, "_占比"].to_numpy(),
+            index=out.index,
+        )
     )
-    return out
+    return out[out_cols]
+
+
+def _unmatched_frame(rows: pd.DataFrame, *, reason: str) -> pd.DataFrame:
+    bad = rows.copy()
+    bad["无平台-仓租费用"] = round_rent_series(bad["海外仓仓租费"])
+    bad["原因"] = reason
+    bad["来源"] = "站点分摊"
+    if "销售平台" not in bad.columns:
+        bad["销售平台"] = ""
+    if OWNER_COL not in bad.columns:
+        bad[OWNER_COL] = ""
+    return bad[SHEET2_COLUMNS]
 
 
 def _allocate_fee_by_site(
     rent_df: pd.DataFrame,
     sku_site_sales: pd.DataFrame,
     plat_site_sales: pd.DataFrame,
-    plat_sites: dict[str, list[str]],
+    owner_sites: dict[tuple[str, str], frozenset[str]],
 ) -> tuple[pd.DataFrame, pd.DataFrame, float]:
     """
-    阶梯 D：L1 商品站点销量 → L2 平台站点销量 → L3 平台站点均摊
-           → L4 默认主站 → L5 无平台。
+    阶梯：L1 商品×允许站点销量 → L2 负责人允许站点平台销量
+         → L4 默认主站(∈允许站点) → L5 无平台。
+    闭包：platform_shop.ops_owner = 运营负责人；不跨负责人、不做全平台摊。
     返回：(站点分摊明细, 未匹配差额明细, 未匹配总额)
     """
+    empty_site = pd.DataFrame(
+        columns=["SKU", "商品ID", OWNER_COL, "平台", "站点", "海外仓仓租费"]
+    )
     rent = rent_df.copy()
     rent["商品ID"] = _norm_key(rent["商品ID"])
     rent["平台"] = _norm_key(rent["平台"])
-    rent["海外仓仓租费"] = pd.to_numeric(rent["海外仓仓租费"], errors="coerce").fillna(0)
+    rent[OWNER_COL] = _norm_key(rent[OWNER_COL]) if OWNER_COL in rent.columns else ""
+    rent["海外仓仓租费"] = round_rent_series(rent["海外仓仓租费"]).fillna(0)
     if "SKU" not in rent.columns:
         rent["SKU"] = ""
     if "销售平台" not in rent.columns:
         rent["销售平台"] = ""
 
     rent_g = (
-        rent.groupby(["商品ID", "平台"], as_index=False, dropna=False)
+        rent.groupby(["商品ID", "平台", OWNER_COL], as_index=False, dropna=False)
         .agg(
             SKU=("SKU", _first_nonempty),
             销售平台=("销售平台", _first_nonempty),
             海外仓仓租费=("海外仓仓租费", "sum"),
         )
     )
+    rent_g["海外仓仓租费"] = round_rent_series(rent_g["海外仓仓租费"])
 
     unmatched_parts: list[pd.DataFrame] = []
     site_parts: list[pd.DataFrame] = []
@@ -335,19 +393,26 @@ def _allocate_fee_by_site(
         | rent_g["平台"].isna()
     )
     if invalid_plat.any():
-        bad = rent_g.loc[invalid_plat].copy()
-        bad["无平台-仓租费用"] = bad["海外仓仓租费"]
-        bad["原因"] = "销售平台无法映射到订单平台"
-        bad["来源"] = "站点分摊"
         unmatched_parts.append(
-            bad[["来源", "SKU", "商品ID", "销售平台", "无平台-仓租费用", "原因"]]
+            _unmatched_frame(
+                rent_g.loc[invalid_plat],
+                reason="销售平台无法映射到订单平台",
+            )
         )
         rent_g = rent_g.loc[~invalid_plat].copy()
 
-    if rent_g.empty:
-        empty_site = pd.DataFrame(
-            columns=["SKU", "商品ID", "平台", "站点", "海外仓仓租费"]
+    # 运营负责人为空 → L5
+    blank_owner = rent_g[OWNER_COL].eq("") | rent_g[OWNER_COL].isna()
+    if blank_owner.any():
+        unmatched_parts.append(
+            _unmatched_frame(
+                rent_g.loc[blank_owner],
+                reason="运营负责人为空",
+            )
         )
+        rent_g = rent_g.loc[~blank_owner].copy()
+
+    if rent_g.empty:
         detail = (
             pd.concat(unmatched_parts, ignore_index=True)
             if unmatched_parts
@@ -364,83 +429,92 @@ def _allocate_fee_by_site(
         )
         return empty_site, detail, total
 
-    # —— L1：商品ID+平台 有站点销量 ——
-    sku_keys = (
-        sku_site_sales.groupby(["商品ID", "平台"], as_index=False)["销量"]
-        .sum()
-        .loc[lambda d: d["销量"] > 0, ["商品ID", "平台"]]
-        if not sku_site_sales.empty
-        else pd.DataFrame(columns=["商品ID", "平台"])
-    )
-    rent_l1 = rent_g.merge(sku_keys, on=["商品ID", "平台"], how="inner")
-    rent_rest = rent_g.merge(
-        sku_keys.assign(_l1=1), on=["商品ID", "平台"], how="left"
-    )
-    rent_rest = rent_rest.loc[rent_rest["_l1"].isna()].drop(columns=["_l1"])
-
-    if not rent_l1.empty:
-        site_parts.append(
-            _split_fee_by_weights(
-                rent_l1, sku_site_sales, on_keys=["商品ID", "平台"]
+    # 无允许站点 → L5
+    rent_g["_allowed"] = [
+        owner_sites.get((str(p), str(o)), frozenset())
+        for p, o in zip(rent_g["平台"], rent_g[OWNER_COL], strict=True)
+    ]
+    no_shop = rent_g["_allowed"].map(lambda s: len(s) == 0)
+    if no_shop.any():
+        unmatched_parts.append(
+            _unmatched_frame(
+                rent_g.loc[no_shop].drop(columns=["_allowed"]),
+                reason="平台+运营负责人在platform_shop无启用店铺站点",
             )
         )
+        rent_g = rent_g.loc[~no_shop].copy()
 
-    # —— L2：平台内各站点总销量 ——
-    plat_keys = (
-        plat_site_sales.groupby("平台", as_index=False)["销量"]
-        .sum()
-        .loc[lambda d: d["销量"] > 0, ["平台"]]
-        if not plat_site_sales.empty
-        else pd.DataFrame(columns=["平台"])
-    )
-    rent_l2 = rent_rest.merge(plat_keys, on="平台", how="inner")
-    rent_rest = rent_rest.merge(
-        plat_keys.assign(_l2=1), on="平台", how="left"
-    )
-    rent_rest = rent_rest.loc[rent_rest["_l2"].isna()].drop(columns=["_l2"])
-
-    if not rent_l2.empty:
-        site_parts.append(
-            _split_fee_by_weights(rent_l2, plat_site_sales, on_keys=["平台"])
+    if rent_g.empty:
+        detail = (
+            pd.concat(unmatched_parts, ignore_index=True)
+            if unmatched_parts
+            else pd.DataFrame(columns=SHEET2_COLUMNS)
         )
+        total = (
+            float(
+                pd.to_numeric(detail["无平台-仓租费用"], errors="coerce")
+                .fillna(0)
+                .sum()
+            )
+            if not detail.empty
+            else 0.0
+        )
+        return empty_site, detail, total
 
-    # —— L3：该平台下站点均摊 ——
-    l3_rows: list[dict] = []
-    l3_keep_idx: list[int] = []
-    for idx, row in rent_rest.iterrows():
-        sites = plat_sites.get(str(row["平台"]), [])
-        if not sites:
+    # —— L1：商品ID+平台，且站点 ∈ 允许站点 ——
+    l1_parts: list[pd.DataFrame] = []
+    l1_idx: list[int] = []
+    for idx, row in rent_g.iterrows():
+        allowed: frozenset[str] = row["_allowed"]
+        uid, plat = str(row["商品ID"]), str(row["平台"])
+        sku_w = sku_site_sales.loc[
+            (sku_site_sales["商品ID"] == uid) & (sku_site_sales["平台"] == plat)
+        ]
+        sku_w = _filter_sales_by_allowed_sites(sku_w, allowed)
+        if sku_w.empty or float(sku_w["销量"].sum()) <= 0:
             continue
-        fee = float(row["海外仓仓租费"]) / len(sites)
-        for site in sites:
-            l3_rows.append(
-                {
-                    "SKU": row["SKU"],
-                    "商品ID": row["商品ID"],
-                    "平台": row["平台"],
-                    "站点": site,
-                    "海外仓仓租费": fee,
-                }
-            )
-        l3_keep_idx.append(idx)
-    if l3_rows:
-        site_parts.append(pd.DataFrame(l3_rows))
-    rent_rest = rent_rest.drop(index=l3_keep_idx, errors="ignore")
+        one = rent_g.loc[[idx]].drop(columns=["_allowed"])
+        l1_parts.append(
+            _split_fee_by_weights(one, sku_w, on_keys=["商品ID", "平台"])
+        )
+        l1_idx.append(idx)
+    if l1_parts:
+        site_parts.extend(l1_parts)
+    rent_rest = rent_g.drop(index=l1_idx, errors="ignore")
 
-    # —— L4：默认主站 ——
+    # —— L2：同平台、负责人允许站点内的总销量 ——
+    l2_parts: list[pd.DataFrame] = []
+    l2_idx: list[int] = []
+    for idx, row in rent_rest.iterrows():
+        allowed = row["_allowed"]
+        plat = str(row["平台"])
+        plat_w = plat_site_sales.loc[plat_site_sales["平台"] == plat]
+        plat_w = _filter_sales_by_allowed_sites(plat_w, allowed)
+        if plat_w.empty or float(plat_w["销量"].sum()) <= 0:
+            continue
+        one = rent_rest.loc[[idx]].drop(columns=["_allowed"])
+        l2_parts.append(_split_fee_by_weights(one, plat_w, on_keys=["平台"]))
+        l2_idx.append(idx)
+    if l2_parts:
+        site_parts.extend(l2_parts)
+    rent_rest = rent_rest.drop(index=l2_idx, errors="ignore")
+
+    # —— L4：默认主站 ∈ 允许站点 ——
     l4_rows: list[dict] = []
     l4_keep_idx: list[int] = []
     for idx, row in rent_rest.iterrows():
+        allowed = row["_allowed"]
         site = _default_site_for_platform(row["平台"])
-        if not site:
+        if not site or not _site_allowed(site, allowed):
             continue
         l4_rows.append(
             {
                 "SKU": row["SKU"],
                 "商品ID": row["商品ID"],
+                OWNER_COL: row[OWNER_COL],
                 "平台": row["平台"],
                 "站点": site,
-                "海外仓仓租费": float(row["海外仓仓租费"]),
+                "海外仓仓租费": round_rent(row["海外仓仓租费"]),
             }
         )
         l4_keep_idx.append(idx)
@@ -450,32 +524,34 @@ def _allocate_fee_by_site(
 
     # —— L5：仍无法落点 ——
     if not rent_rest.empty:
-        miss = rent_rest.copy()
-        miss["无平台-仓租费用"] = miss["海外仓仓租费"]
-        miss["原因"] = "无法落点到站点(无订单站点且无默认主站)"
-        miss["来源"] = "站点分摊"
         unmatched_parts.append(
-            miss[["来源", "SKU", "商品ID", "销售平台", "无平台-仓租费用", "原因"]]
+            _unmatched_frame(
+                rent_rest.drop(columns=["_allowed"], errors="ignore"),
+                reason="允许站点内无订单销量且默认主站不在允许站点",
+            )
         )
 
     site_df = (
         pd.concat(site_parts, ignore_index=True)
         if site_parts
-        else pd.DataFrame(columns=["SKU", "商品ID", "平台", "站点", "海外仓仓租费"])
+        else empty_site.copy()
     )
     if not site_df.empty:
-        site_df["海外仓仓租费"] = pd.to_numeric(
-            site_df["海外仓仓租费"], errors="coerce"
-        ).fillna(0)
+        site_df["海外仓仓租费"] = round_rent_series(site_df["海外仓仓租费"]).fillna(0)
+        if OWNER_COL not in site_df.columns:
+            site_df[OWNER_COL] = ""
         site_df = (
-            site_df.groupby(["商品ID", "平台", "站点"], as_index=False, dropna=False)
+            site_df.groupby(
+                ["商品ID", OWNER_COL, "平台", "站点"], as_index=False, dropna=False
+            )
             .agg(
                 SKU=("SKU", _first_nonempty),
                 海外仓仓租费=("海外仓仓租费", "sum"),
             )
         )
+        site_df["海外仓仓租费"] = round_rent_series(site_df["海外仓仓租费"])
         site_df = site_df.sort_values(
-            by=["平台", "站点", "商品ID"], kind="mergesort"
+            by=["平台", OWNER_COL, "站点", "商品ID"], kind="mergesort"
         ).reset_index(drop=True)
 
     unmatched_detail = (
@@ -483,11 +559,15 @@ def _allocate_fee_by_site(
         if unmatched_parts
         else pd.DataFrame(columns=SHEET2_COLUMNS)
     )
+    if not unmatched_detail.empty:
+        unmatched_detail = round_rent_columns(unmatched_detail, ["无平台-仓租费用"])
     unmatched_total = (
         float(
-            pd.to_numeric(unmatched_detail["无平台-仓租费用"], errors="coerce")
-            .fillna(0)
-            .sum()
+            round_rent(
+                pd.to_numeric(unmatched_detail["无平台-仓租费用"], errors="coerce")
+                .fillna(0)
+                .sum()
+            )
         )
         if not unmatched_detail.empty
         else 0.0
@@ -519,41 +599,50 @@ def main() -> int:
             "未找到任何 (平台分摊) 文件，请先运行 K1_0_HY_仓租.py / K1_0_4PX_仓租.py"
         )
 
-    sku_site_sales, plat_site_sales, plat_sites = _load_order_dims(ORDER_PATH)
+    owner_sites = fetch_owner_platform_sites()
+    print(
+        f"[读取] platform_shop 平台×负责人站点组={len(owner_sites)} 组"
+    )
+
+    sku_site_sales, plat_site_sales = _load_order_dims(ORDER_PATH)
     print(
         f"[读取] 订单统计 L1={len(sku_site_sales)} 行，"
-        f"L2平台站点={len(plat_site_sales)} 行，"
-        f"L3平台数={len(plat_sites)} ← {ORDER_PATH}"
+        f"L2平台站点={len(plat_site_sales)} 行 ← {ORDER_PATH}"
     )
 
     merged = pd.concat(platform_parts, ignore_index=True)
-    merged["海外仓仓租费"] = pd.to_numeric(merged["海外仓仓租费"], errors="coerce").fillna(0)
+    merged["海外仓仓租费"] = round_rent_series(merged["海外仓仓租费"]).fillna(0)
     if "SKU" not in merged.columns:
         merged["SKU"] = ""
+    if OWNER_COL not in merged.columns:
+        merged[OWNER_COL] = ""
+    merged[OWNER_COL] = _norm_key(merged[OWNER_COL])
 
-    # 先按 商品ID+销售平台 合并两仓
+    # 按 商品ID+销售平台+运营负责人 合并两仓
     by_sales_plat = (
-        merged.groupby(["商品ID", "销售平台"], as_index=False, dropna=False)
+        merged.groupby(["商品ID", "销售平台", OWNER_COL], as_index=False, dropna=False)
         .agg(
             SKU=("SKU", _first_nonempty),
             海外仓仓租费=("海外仓仓租费", "sum"),
         )
     )
+    by_sales_plat["海外仓仓租费"] = round_rent_series(by_sales_plat["海外仓仓租费"])
     by_sales_plat["平台"] = _map_sales_platform_to_platform(by_sales_plat["销售平台"])
 
-    rent_before = float(by_sales_plat["海外仓仓租费"].sum())
+    rent_before = float(round_rent(by_sales_plat["海外仓仓租费"].sum()))
     site_df, site_unmatched_detail, site_unmatched_total = _allocate_fee_by_site(
-        by_sales_plat, sku_site_sales, plat_site_sales, plat_sites
+        by_sales_plat, sku_site_sales, plat_site_sales, owner_sites
     )
 
-    warehouse_no_platform = float(sum(v for _, v in no_platform_totals))
-    all_no_platform = warehouse_no_platform + site_unmatched_total
+    warehouse_no_platform = float(
+        round_rent(sum(v for _, v in no_platform_totals))
+    )
+    all_no_platform = float(
+        round_rent(warehouse_no_platform + site_unmatched_total)
+    )
 
     site_df = site_df.copy()
-    site_df["海外仓仓租费"] = pd.to_numeric(
-        site_df["海外仓仓租费"], errors="coerce"
-    ).fillna(0)
-    # 去掉仓租为 0 的行（如库存标签映射出 chengyi-CD 但无实际分摊费用）
+    site_df["海外仓仓租费"] = round_rent_series(site_df["海外仓仓租费"]).fillna(0)
     before_n = len(site_df)
     site_df = site_df.loc[site_df["海外仓仓租费"].abs() > _REMAINDER_EPS].copy()
     site_df = site_df.reset_index(drop=True)
@@ -564,7 +653,8 @@ def main() -> int:
     uid = _norm_key(site_df["商品ID"]) if not site_df.empty else pd.Series(dtype=str)
     site = _norm_key(site_df["站点"]) if not site_df.empty else pd.Series(dtype=str)
     plat = _norm_key(site_df["平台"]) if not site_df.empty else pd.Series(dtype=str)
-    # 与旧 K1/K2 一致：站点+商品ID / 平台+商品ID；任一侧为空则识别码置空
+    if OWNER_COL not in site_df.columns:
+        site_df[OWNER_COL] = ""
     if not site_df.empty:
         site_df["站点商品ID识别码"] = (site + uid).where(
             site.ne("") & uid.ne(""), ""
@@ -581,6 +671,7 @@ def main() -> int:
                 {
                     "SKU": "",
                     "商品ID": "",
+                    OWNER_COL: "",
                     "平台": "",
                     "站点": "",
                     "站点商品ID识别码": "",
@@ -590,10 +681,9 @@ def main() -> int:
                 }
             ]
         )
-    sheet1 = site_df[SHEET1_COLUMNS]
-    fee_sum = float(pd.to_numeric(sheet1["海外仓仓租费"], errors="coerce").fillna(0).sum())
+    sheet1 = round_rent_columns(site_df[SHEET1_COLUMNS], ["海外仓仓租费", "无平台-仓租费用"])
+    fee_sum = float(round_rent(sheet1["海外仓仓租费"].fillna(0).sum()))
 
-    # Sheet2：原无平台明细 + 站点分摊未匹配 + 合计
     detail_parts = [
         p for p in no_platform_parts if p is not None and not p.empty
     ]
@@ -605,15 +695,14 @@ def main() -> int:
         else pd.DataFrame(columns=SHEET2_COLUMNS)
     )
     if not detail.empty and "无平台-仓租费用" in detail.columns:
-        detail["无平台-仓租费用"] = pd.to_numeric(
-            detail["无平台-仓租费用"], errors="coerce"
-        )
+        detail = round_rent_columns(detail, ["无平台-仓租费用"])
 
     total_row = {
         "来源": "",
         "SKU": "",
         "商品ID": "",
         "销售平台": "",
+        OWNER_COL: "",
         "无平台-仓租费用": all_no_platform,
         "原因": "合计",
     }
@@ -628,7 +717,7 @@ def main() -> int:
     _to_excel_safe(OUTPUT_PATH, sheet1, sheet2)
 
     print(
-        f"[合并] 仓租(商品ID+销售平台)合计={rent_before:.4f}；"
+        f"[合并] 仓租(商品ID+销售平台+运营负责人)合计={rent_before:.4f}；"
         f"站点分摊后海外仓仓租费={fee_sum:.4f}；"
         f"站点未匹配={site_unmatched_total:.4f}"
     )

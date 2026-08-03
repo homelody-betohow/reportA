@@ -12,10 +12,10 @@ K6_处理分销_分摊_仓租 — 分销口径收尾 + 无平台仓租分摊（1
 
 """
 
-import numpy as np
-import pandas as pd
 import importlib.util
 from pathlib import Path
+
+import pandas as pd
 # 须在 import config/common 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
 _epr_file = next(p / "ensure_project_root.py" for p in Path(__file__).resolve().parents if (p / "ensure_project_root.py").is_file())
 _spec = importlib.util.spec_from_file_location("ensure_project_root", _epr_file)
@@ -23,6 +23,7 @@ _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
+from common.cang_zu_decimal import round_rent, round_rent_series  # noqa: E402
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
 
@@ -31,8 +32,8 @@ def _unallocated_rent_total(df: pd.DataFrame) -> float:
     """K4 写入的无平台仓租总额（通常仅在第 1 行有值）。"""
     col = df["所有仓库-无平台-需要分摊的费用"]
     if col.notna().any():
-        return float(col[col.notna()].iloc[0])
-    return float(col.fillna(0).sum())
+        return float(round_rent(col[col.notna()].iloc[0]))
+    return float(round_rent(col.fillna(0).sum()))
 
 # TODO 文件路径！！！
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-17)订单统计-{shared_date}.xlsx"
@@ -61,16 +62,21 @@ _participate = main_file_df['产品状态'] != '分销'
 total_cost = _unallocated_rent_total(main_file_df)
 # 2. 筛选参与分摊的行
 num_participating = int(_participate.sum())
-# 3. 平均分摊（保持浮点精度，不在此行 round，避免 2512 行累计丢 3～4 元）
-allocation_per_row = total_cost / num_participating if num_participating > 0 else 0.0
+# 3. 平均分摊（仓租金额统一保留 4 位小数）
+allocation_per_row = (
+    round_rent(total_cost / num_participating) if num_participating > 0 else 0.0
+)
 # 4. 创建新列“仓租分摊”
 main_file_df["仓租分摊"] = 0.0
 main_file_df.loc[_participate, "仓租分摊"] = allocation_per_row
+main_file_df["仓租分摊"] = round_rent_series(main_file_df["仓租分摊"]).fillna(0)
 # 重命名
 main_file_df = main_file_df.rename(columns={"海外仓仓租费": "原-海外仓仓租费"})
-# 海外仓仓租费不做逐行 round，保证 sum(18) = sum(17 原海外仓) + total_cost
-main_file_df["海外仓仓租费"] = (
-    main_file_df["原-海外仓仓租费"].fillna(0) + main_file_df["仓租分摊"]
+main_file_df["原-海外仓仓租费"] = round_rent_series(
+    main_file_df["原-海外仓仓租费"]
+).fillna(0)
+main_file_df["海外仓仓租费"] = round_rent_series(
+    main_file_df["原-海外仓仓租费"] + main_file_df["仓租分摊"]
 )
 
 # 产品状态仍为空（含空串/空白）→ 赋 "--"（须在 fillna(0) 之前，且排除该列）
@@ -83,7 +89,10 @@ _exclude_fill0 = {'平台', '平台商品ID识别码', '产品状态'}
 _fill0_cols = [c for c in main_file_df.columns if c not in _exclude_fill0]
 main_file_df[_fill0_cols] = main_file_df[_fill0_cols].fillna(0)
 
-main_file_df['仓租合计'] = np.round(main_file_df['FBA仓租费'] + main_file_df['海外仓仓租费'], 2)
+main_file_df["仓租合计"] = round_rent_series(
+    pd.to_numeric(main_file_df["FBA仓租费"], errors="coerce").fillna(0)
+    + pd.to_numeric(main_file_df["海外仓仓租费"], errors="coerce").fillna(0)
+)
 
 # 保存修改后的文件
 output_path = main_file_path.replace('已完成-17', '已完成-18')

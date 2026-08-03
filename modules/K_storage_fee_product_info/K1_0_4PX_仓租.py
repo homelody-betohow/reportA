@@ -8,7 +8,7 @@ K1_0_4PX_仓租.py — 4PX 仓租分摊（DB / K0 版）
      - 未命中：插入待更新行（is_active=0），提示人工补全后重跑（可先跑 upProductMapping）
   3. product_sku → product_uid（商品ID）
   4. 用 K0「各平台商品ID周转明细」，按「销售平台 + 商品ID + 可售库存-可调」占比
-     分摊「海外仓仓租费」到销售平台（站点级分摊后续再做）
+     分摊「海外仓仓租费」到销售平台，并透传「运营负责人」（站点级分摊后续再做）
 
 用法：
   python modules/K_storage_fee_product_info/K0_库存周转.py
@@ -37,6 +37,7 @@ _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
+from common.cang_zu_decimal import round_rent, round_rent_columns, round_rent_series  # noqa: E402
 from common.style import Color  # noqa: E402
 from config.A0_paths import DESKTOP_ROOT  # noqa: E402
 from config.A0_set_date import folder_name, ku_cun_date, shared_date  # noqa: E402
@@ -56,6 +57,7 @@ KU_CUN_SHEET = "各平台商品ID周转明细"
 KU_CUN_FILE_SUFFIX = "库存动销明细.xlsx"
 PLATFORM_COL = "销售平台"
 QTY_COL = "可售库存-可调"
+OWNER_COL = "运营负责人"  # 来自 K0「各平台商品ID周转明细」
 # 不参与有效分摊的销售平台：库存不进分母，仓租不进 Sheet1；
 # 仅当商品无其它有效平台库存时，整笔进入 Sheet2「无平台-仓租费用」
 NO_SITE_PLATFORMS = frozenset({"无", "其他", "ALL"})
@@ -66,6 +68,7 @@ PX4_SHEET1_COLUMNS = [
     "SKU",
     "商品ID",
     "销售平台",
+    "运营负责人",
     "可售库存-可调",
     "海外仓仓租费",
     "无平台-仓租费用",
@@ -418,13 +421,15 @@ def _prepare_platform_qty_ratio(ku_cun_df: pd.DataFrame) -> pd.DataFrame:
     按商品ID 计算有效销售平台的库存占比。
     「无」「其他」「ALL」库存不进分母，避免稀释有效平台分摊。
     有效库存合计为 0 时占比为 NaN（整笔进无平台）。
+    若有「运营负责人」，按商品ID+销售平台取首行透传。
     """
     out = ku_cun_df.copy()
     out[QTY_COL] = pd.to_numeric(out[QTY_COL], errors="coerce").fillna(0)
-    out = (
-        out.groupby(["商品ID", PLATFORM_COL], as_index=False, dropna=False)[QTY_COL]
-        .sum()
-    )
+    # 同一商品ID+平台多行先合并，避免占比合计 > 1
+    agg: dict[str, str] = {QTY_COL: "sum"}
+    if OWNER_COL in out.columns:
+        agg[OWNER_COL] = "first"
+    out = out.groupby(["商品ID", PLATFORM_COL], as_index=False, dropna=False).agg(agg)
     is_no_site = out[PLATFORM_COL].isin(NO_SITE_PLATFORMS)
     out["_有效库存"] = out[QTY_COL].where(~is_no_site, 0.0)
     effective_total = out.groupby("商品ID")["_有效库存"].transform("sum")
@@ -481,10 +486,10 @@ def _build_no_platform_detail(df: pd.DataFrame) -> pd.DataFrame:
 
     rows: list[dict] = []
     for key, g in work.groupby(key_col, dropna=False, sort=False):
-        total = float(g["_总仓租"].iloc[0])
-        allocated = float(g["_仓租"].sum())
-        rem = total - allocated
-        if abs(rem) <= _REMAINDER_EPS:
+        total = round_rent(g["_总仓租"].iloc[0])
+        allocated = round_rent(g["_仓租"].sum())
+        rem = round_rent(float(total) - float(allocated))
+        if abs(float(rem)) <= _REMAINDER_EPS:
             continue
         no_site_qty = float(
             g.loc[g[PLATFORM_COL].isin(NO_SITE_PLATFORMS), QTY_COL].sum()
@@ -508,7 +513,7 @@ def _build_no_platform_detail(df: pd.DataFrame) -> pd.DataFrame:
                 else float(g[QTY_COL].fillna(0).sum()),
                 "无平台-仓租费用": rem,
                 "原因": _sku_no_platform_reason(
-                    g[PLATFORM_COL], rem=rem, allocated=allocated
+                    g[PLATFORM_COL], rem=float(rem), allocated=float(allocated)
                 ),
             }
         )
@@ -531,7 +536,7 @@ def _with_no_platform_total(
                 "商品ID": "",
                 PLATFORM_COL: "",
                 QTY_COL: 0,
-                "无平台-仓租费用": total,
+                "无平台-仓租费用": round_rent(total),
                 "原因": "合计",
             }
         ],
@@ -558,10 +563,10 @@ def _save_alloc_workbook(
 
 
 def _save_step1(df: pd.DataFrame, out_dir: str) -> str:
-    out = df
-    if "总仓租" in df.columns:
-        fee = pd.to_numeric(df["总仓租"], errors="coerce").fillna(0)
-        out = df.loc[fee != 0]
+    out = round_rent_columns(df, ["总仓租"])
+    if "总仓租" in out.columns:
+        fee = pd.to_numeric(out["总仓租"], errors="coerce").fillna(0)
+        out = out.loc[fee != 0]
     cols = [c for c in ("仓库SKU", "SKU", "商品ID", "总仓租") if c in out.columns]
     cols += [c for c in out.columns if c not in cols]
     path = os.path.join(out_dir, "(商品ID)4PX-仓租明细.xlsx")
@@ -626,7 +631,10 @@ else:
         ].copy()
 
 px4_df = px4_df.rename(columns={AMOUNT_COL: "总仓租", "SKU": "仓库SKU"})
-px4_all_cang_zu = float(pd.to_numeric(px4_df["总仓租"], errors="coerce").fillna(0).sum())
+px4_df["总仓租"] = round_rent_series(px4_df["总仓租"])
+px4_all_cang_zu = round_rent(
+    pd.to_numeric(px4_df["总仓租"], errors="coerce").fillna(0).sum()
+)
 
 # ---------- 2. product_sku_mapping：仓库 SKU → 标准 SKU ----------
 if px4_df.empty:
@@ -699,29 +707,41 @@ need_cols = ["商品ID", PLATFORM_COL, QTY_COL]
 missing = [c for c in need_cols if c not in ku_cun_df.columns]
 if missing:
     raise KeyError(f"「{KU_CUN_SHEET}」缺少列 {missing}：{ku_cun_path}")
+if OWNER_COL not in ku_cun_df.columns:
+    print(
+        f"{Color.YELLOW}[检查] K0「{KU_CUN_SHEET}」无列「{OWNER_COL}」，"
+        f"平台分摊将写空值；请重新运行 K0_库存周转.py{Color.RESET}"
+    )
+    ku_cun_df[OWNER_COL] = ""
 
-ku_cun_df = _prepare_platform_qty_ratio(ku_cun_df[need_cols])
+ku_cun_df = _prepare_platform_qty_ratio(ku_cun_df[need_cols + [OWNER_COL]])
 
 DF = pd.merge(px4_df_2, ku_cun_df, on="商品ID", how="left")
 DF["数量占比"] = pd.to_numeric(DF["数量占比"], errors="coerce")
-DF["仓租"] = DF["总仓租"] * DF["数量占比"]
-DF.loc[DF[PLATFORM_COL].isin(NO_SITE_PLATFORMS), "仓租"] = 0
-DF["仓租"] = pd.to_numeric(DF["仓租"], errors="coerce")
+DF["仓租"] = round_rent_series(
+    pd.to_numeric(DF["总仓租"], errors="coerce")
+    * pd.to_numeric(DF["数量占比"], errors="coerce")
+)
+DF.loc[DF[PLATFORM_COL].isin(NO_SITE_PLATFORMS), "仓租"] = 0.0
+DF["仓租"] = round_rent_series(DF["仓租"]).fillna(0)
+if OWNER_COL not in DF.columns:
+    DF[OWNER_COL] = ""
 
 result_DF = DF.loc[
     DF[PLATFORM_COL].notna() & ~DF[PLATFORM_COL].isin(NO_SITE_PLATFORMS),
-    ["SKU", "商品ID", PLATFORM_COL, QTY_COL, "仓租"],
+    ["SKU", "商品ID", PLATFORM_COL, OWNER_COL, QTY_COL, "仓租"],
 ].copy()
 result_DF = result_DF.rename(columns={"仓租": "海外仓仓租费"})
+result_DF = round_rent_columns(result_DF, ["海外仓仓租费"])
 
-px4_have_site_cang_zu = float(result_DF["海外仓仓租费"].fillna(0).sum())
-px4_no_site_fen_tan = px4_all_cang_zu - px4_have_site_cang_zu
+px4_have_site_cang_zu = round_rent(result_DF["海外仓仓租费"].fillna(0).sum())
+px4_no_site_fen_tan = round_rent(float(px4_all_cang_zu) - float(px4_have_site_cang_zu))
 print(
     f"[分摊] 维度=有效销售平台+商品ID+{QTY_COL}（不含无/其他/ALL）；"
-    f"总仓租={px4_all_cang_zu:.4f}，"
-    f"已分摊到销售平台={px4_have_site_cang_zu:.4f}，"
-    f"无平台-仓租费用={px4_no_site_fen_tan:.4f}，"
-    f"核对合计={px4_have_site_cang_zu + px4_no_site_fen_tan:.4f}"
+    f"总仓租={float(px4_all_cang_zu):.4f}，"
+    f"已分摊到销售平台={float(px4_have_site_cang_zu):.4f}，"
+    f"无平台-仓租费用={float(px4_no_site_fen_tan):.4f}，"
+    f"核对合计={float(px4_have_site_cang_zu) + float(px4_no_site_fen_tan):.4f}"
 )
 
 result_DF["无平台-仓租费用"] = None
@@ -729,10 +749,13 @@ if len(result_DF) > 0:
     result_DF.at[result_DF.index[0], "无平台-仓租费用"] = px4_no_site_fen_tan
 result_DF = result_DF[PX4_SHEET1_COLUMNS]
 
-no_platform_DF = _with_no_platform_total(
-    _build_no_platform_detail(DF),
-    px4_no_site_fen_tan,
-    PX4_SHEET2_COLUMNS,
+no_platform_DF = round_rent_columns(
+    _with_no_platform_total(
+        _build_no_platform_detail(DF),
+        px4_no_site_fen_tan,
+        PX4_SHEET2_COLUMNS,
+    ),
+    ["无平台-仓租费用"],
 )
 
 output_file_path = os.path.join(output_dir, "(平台分摊)4PX-仓租明细.xlsx")

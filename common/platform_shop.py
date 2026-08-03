@@ -71,6 +71,19 @@ _PLATFORM_SHOP_RENT_SQL = """
       AND TRIM(market_region) <> ''
 """
 
+# 仓租站点分摊：平台(market_code) + 运营负责人 → 允许站点(market_region)
+_PLATFORM_SHOP_OWNER_SITE_SQL = """
+    SELECT
+        TRIM(market_code) AS market_code,
+        TRIM(market_region) AS market_region,
+        TRIM(ops_owner) AS ops_owner,
+    FROM platform_shop
+    WHERE shop_status = 1
+      AND TRIM(market_code) <> ''
+      AND TRIM(ops_owner) <> ''
+      AND TRIM(market_region) <> ''
+"""
+
 
 def lm_suffix_from_platform_sku(platform_sku: str) -> str:
     """平台 sku 以 ls- 开头 → -ls，否则 → -xj。"""
@@ -229,6 +242,33 @@ def fetch_platform_shop_rows() -> list[dict]:
         cur.close()
         conn.close()
     return rows
+
+
+def fetch_owner_platform_sites() -> dict[tuple[str, str], frozenset[str]]:
+    """
+    启用店铺：(market_code, ops_owner) → frozenset(market_region)。
+
+    供海外仓仓租站点分摊：费用必须落在「平台 + 运营负责人」对应店铺站点内。
+    """
+    db = get_db_manager()
+    conn = db.get_connection()
+    cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cur.execute(_PLATFORM_SHOP_OWNER_SITE_SQL)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    buckets: dict[tuple[str, str], set[str]] = {}
+    for r in rows:
+        code = str(r.get("market_code") or "").strip()
+        owner = str(r.get("ops_owner") or "").strip()
+        region = str(r.get("market_region") or "").strip()
+        if not code or not owner or not region:
+            continue
+        buckets.setdefault((code, owner), set()).add(region)
+    return {k: frozenset(v) for k, v in buckets.items()}
 
 
 def build_shop_maps(rows: list[dict]) -> tuple[dict, dict, dict]:

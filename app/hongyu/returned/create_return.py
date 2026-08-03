@@ -17,10 +17,14 @@
 表格 ``国家代码``/``城市``/``邮编`` 为空时用 ``country``/``city``/``postal_code`` 回填。
 DB 未命中时，再调易仓 WMS ``getOrders``（``code``=ERP 订单号）补查，
 同样回填 ``OMS原始订单号`` / ``店铺名称`` / ``平台订单号``（``reference_no``）等；
+仍未命中且 ERP 单号尾部为 ``-数字``（如 ``xxx-1``）时，去掉该尾缀再查一次；
 仍无结果则只回写 ``任务信息``，不调 API。
+若原单 ``warehouse_code`` 以 ``HY-`` 开头，创建退件时额外传
+``order_code``=``provider_order_no``（OMS 原单号）。
 
 表格列 → API（回邮）::
     ERP订单号 / 平台订单号  →  reference_no
+    （HY- 仓）provider_order_no →  order_code
     产品SKU + 退件数量      →  items[].product_sku / quantity
         产品SKU 含 ``+`` 时按多产品解析：``SKU*数量+SKU*数量``，
         先 ``+`` 再 ``*``；无 ``*`` 数量时回退该行「退件数量」
@@ -66,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -201,6 +206,7 @@ class ShippedOrder:
     country: str = ""
     city: str = ""
     postal_code: str = ""
+    warehouse_code: str = ""
 
 
 @dataclass
@@ -297,7 +303,7 @@ def fetch_shipped_orders(order_nos: Sequence[str]) -> Dict[str, ShippedOrder]:
             placeholders = ",".join(["%s"] * len(chunk))
             sql = f"""
                 SELECT order_no, provider_order_no, shop_name_en, ref_no,
-                       country, city, postal_code
+                       country, city, postal_code, warehouse_code
                 FROM `{SHIPPED_TABLE}`
                 WHERE order_no IN ({placeholders})
                 ORDER BY id ASC
@@ -311,6 +317,7 @@ def fetch_shipped_orders(order_nos: Sequence[str]) -> Dict[str, ShippedOrder]:
                 city = clean_cell(row.get("city"))
                 postal = clean_cell(row.get("postal_code"))
                 ref_no = clean_cell(row.get("ref_no"))
+                warehouse_code = clean_cell(row.get("warehouse_code"))
                 prev = mapping.get(order_no)
                 if prev is None:
                     mapping[order_no] = ShippedOrder(
@@ -321,6 +328,7 @@ def fetch_shipped_orders(order_nos: Sequence[str]) -> Dict[str, ShippedOrder]:
                         country=country,
                         city=city,
                         postal_code=postal,
+                        warehouse_code=warehouse_code,
                     )
                     continue
                 if (
@@ -328,6 +336,7 @@ def fetch_shipped_orders(order_nos: Sequence[str]) -> Dict[str, ShippedOrder]:
                     or (not prev.country and country)
                     or (not prev.city and city)
                     or (not prev.postal_code and postal)
+                    or (not prev.warehouse_code and warehouse_code)
                 ):
                     mapping[order_no] = replace(
                         prev,
@@ -335,6 +344,7 @@ def fetch_shipped_orders(order_nos: Sequence[str]) -> Dict[str, ShippedOrder]:
                         country=prev.country or country,
                         city=prev.city or city,
                         postal_code=prev.postal_code or postal,
+                        warehouse_code=prev.warehouse_code or warehouse_code,
                     )
     finally:
         cur.close()
@@ -460,24 +470,69 @@ def fetch_eccang_orders_fallback(order_nos: Sequence[str]) -> Dict[str, ShippedO
     return mapping
 
 
+_ORDER_NO_DASH_DIGIT = re.compile(r"^(.+)-(\d)$")
+
+
+def _strip_trailing_dash_digit(order_no: str) -> str:
+    """去掉尾部 ``-数字``（单字）；无则返回空串。例：``WEC...-1`` → ``WEC...``。"""
+    text = clean_cell(order_no)
+    m = _ORDER_NO_DASH_DIGIT.match(text)
+    if not m:
+        return ""
+    return m.group(1)
+
+
 def resolve_shipped_orders(order_nos: Sequence[str]) -> Dict[str, ShippedOrder]:
-    """先查 ``sales_order_shipped``，未命中再易仓 ``getOrders`` 补查。"""
+    """先查 ``sales_order_shipped``，未命中再易仓 ``getOrders`` 补查。
+
+    仍未命中且单号尾部为 ``-数字`` 时，去掉尾缀后再查 DB / 易仓，
+    命中结果挂回原始 ERP 单号键。
+    """
+    all_codes = {clean_cell(x) for x in order_nos if clean_cell(x)}
     mapping = fetch_shipped_orders(order_nos)
     db_hit = len(mapping)
-    missing = sorted(
-        code
-        for code in {clean_cell(x) for x in order_nos if clean_cell(x)}
-        if code not in mapping
-    )
+    missing = sorted(code for code in all_codes if code not in mapping)
     eccang_hit = 0
     if missing:
         eccang_map = fetch_eccang_orders_fallback(missing)
         eccang_hit = len(eccang_map)
         mapping.update(eccang_map)
-    erp_cnt = len({clean_cell(x) for x in order_nos if clean_cell(x)})
+
+    # 尾缀 -数字：如 WEC0912607100090-1 → WEC0912607100090 再查
+    alt_to_originals: Dict[str, List[str]] = {}
+    for code in sorted(all_codes):
+        if code in mapping:
+            continue
+        alt = _strip_trailing_dash_digit(code)
+        if not alt or alt == code:
+            continue
+        alt_to_originals.setdefault(alt, []).append(code)
+
+    suffix_hit = 0
+    if alt_to_originals:
+        alt_codes = sorted(alt_to_originals)
+        alt_map = fetch_shipped_orders(alt_codes)
+        alt_missing = [c for c in alt_codes if c not in alt_map]
+        if alt_missing:
+            alt_map.update(fetch_eccang_orders_fallback(alt_missing))
+        for alt, originals in alt_to_originals.items():
+            shipped = alt_map.get(alt)
+            if shipped is None:
+                continue
+            for original in originals:
+                if original in mapping:
+                    continue
+                mapping[original] = shipped
+                suffix_hit += 1
+                print(
+                    f"[SHIP] 去尾缀命中 order_no={original} → {alt}",
+                    file=sys.stderr,
+                )
+
+    erp_cnt = len(all_codes)
     print(
         f"[SHIP] ERP={erp_cnt} db_hit={db_hit} eccang_hit={eccang_hit} "
-        f"total_hit={len(mapping)}"
+        f"suffix_hit={suffix_hit} total_hit={len(mapping)}"
     )
     return mapping
 
@@ -1032,7 +1087,18 @@ def _resolve_shipped(
     return shipped
 
 
-def _build_params(group: ReturnGroup, options: CreateOptions) -> Dict[str, Any]:
+def _hy_warehouse_order_code(shipped: ShippedOrder) -> Optional[str]:
+    """``sales_order_shipped.warehouse_code`` 以 ``HY-`` 开头时返回 ``provider_order_no``。"""
+    if not clean_cell(shipped.warehouse_code).upper().startswith("HY-"):
+        return None
+    return clean_cell(shipped.provider_order_no) or None
+
+
+def _build_params(
+    group: ReturnGroup,
+    options: CreateOptions,
+    shipped: Optional[ShippedOrder] = None,
+) -> Dict[str, Any]:
     """按 mode 组装 params 并做本地必填校验。"""
     if options.mode == "mail":
         country = group.rows[0].values.get(COL_COUNTRY, "")
@@ -1054,6 +1120,10 @@ def _build_params(group: ReturnGroup, options: CreateOptions) -> Dict[str, Any]:
             default_process=options.default_process,
             operation_desc=options.operation_desc,
         )
+    if shipped is not None:
+        hy_order = _hy_warehouse_order_code(shipped)
+        if hy_order:
+            params["order_code"] = hy_order
     _validate_params_before_api(params, mode=options.mode)
     return params
 
@@ -1112,7 +1182,7 @@ def process_groups(
         back.apply_shipped(group, shipped, filled)
 
         try:
-            params = _build_params(group, options)
+            params = _build_params(group, options, shipped=shipped)
             ensure_nw_skus_on_items(
                 params.get("items") or [],
                 dry_run=options.dry_run,

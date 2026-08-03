@@ -1,5 +1,5 @@
 """
-K1_4_合并订单统计 — 将海外仓仓租并入订单统计（月报步骤 15→16）
+K1_4_合并订单统计 — 将海外仓仓租并入订单统计（15→16）
 
 【流水线位置】
   上游：K1_3 产出「(平台分摊)所有-海外仓-仓租明细.xlsx」
@@ -9,20 +9,16 @@ K1_4_合并订单统计 — 将海外仓仓租并入订单统计（月报步骤 
        再把 MANO 仓租写入同一份「已完成-16」的「FBA仓租费」
 
 【核心处理】
-  1. left merge：订单统计 ← 仓租「海外仓仓租费」
-  2. 仓租有、订单统计无的识别码行追加进结果（避免仓租丢失）
-  3. 透传无平台分摊费用（K1_3「无平台-仓租费用」→ 结果列
+  1. 读 K1_3 Sheet「平台分摊」；按「站点商品ID识别码」汇总「海外仓仓租费」
+     （同一识别码可能对应多运营负责人行，识别码不含负责人，须先 sum）
+  2. left merge：订单统计 ← 汇总后的海外仓仓租费
+  3. 仓租有、订单统计无的识别码行追加进结果（避免仓租丢失）
+  4. 透传无平台分摊费用（K1_3「无平台-仓租费用」→ 结果列
      「所有仓库-无平台-需要分摊的费用」，仅写在第 1 行，供后续分摊脚本读）
 
-【相对旧 K4 不再做的事】
-  - 不做 LM-BC 总仓租对半分（K1_3 已按站点销量阶梯分摊）
-  - 不做壳站点替换（MANO-FR / AMAZON-DE / LM-BTH …）
-    原因：旧链路仓租先落到 PLATFORM_TO_SITE「壳站点」，再靠 K4 归并到真实店铺站点；
-    K1_3 已直接按订单统计「站点」分摊，识别码应与 (已完成-15) 对齐，
-    再替换会误删壳站点订单行并二次挪费。
-
-【平台字段】
-  「平台」「平台商品ID识别码」已在 K1_3 写出；本脚本追加仓租缺失行时一并带入，不再二次映射。
+【说明】
+  - 站点 / 运营负责人边界已在 K1_3 处理；本脚本只做识别码挂接 + 无平台透传。
+  - 不做 LM-BC 对半分、不做壳站点替换。
 
 用法：
   python modules/K_storage_fee_product_info/K1_3_合并仓租+站点分摊.py
@@ -47,12 +43,28 @@ _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
+from common.cang_zu_decimal import round_rent, round_rent_series  # noqa: E402
 from config.A0_paths import DESKTOP_ROOT  # noqa: E402
 from config.A0_set_date import folder_name, shared_date  # noqa: E402
 
 # K1_3 Sheet1 列名；写出时仍用旧列名，兼容 K6 等下游
+_SHEET_PLATFORM = "平台分摊"
+_COL_ID = "站点商品ID识别码"
+_COL_FEE = "海外仓仓租费"
 _COL_NO_PLATFORM_SRC = "无平台-仓租费用"
 _COL_NO_PLATFORM_OUT = "所有仓库-无平台-需要分摊的费用"
+_COL_OWNER = "运营负责人"
+_BLANK_IDS = frozenset({"", "nan", "None", "NaN"})
+
+
+def _first_nonempty(series: pd.Series) -> str:
+    for v in series:
+        if pd.isna(v):
+            continue
+        s = str(v).strip()
+        if s and s.lower() not in ("nan", "none"):
+            return s
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -91,9 +103,53 @@ def load_inputs() -> tuple[pd.DataFrame, pd.DataFrame, Path]:
             f"请先运行 K1_3_合并仓租+站点分摊.py"
         )
     order_df = pd.read_excel(order_path)
-    # K1_3 多 Sheet：默认读第一个「平台分摊」
-    cang_zu_df = pd.read_excel(cang_zu_path)
+    try:
+        cang_zu_df = pd.read_excel(cang_zu_path, sheet_name=_SHEET_PLATFORM)
+    except ValueError:
+        # 兼容旧单 Sheet 文件
+        cang_zu_df = pd.read_excel(cang_zu_path, sheet_name=0)
     return order_df, cang_zu_df, order_path
+
+
+def _aggregate_rent_by_site_uid(cang_zu_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    按「站点商品ID识别码」汇总海外仓仓租费。
+
+    K1_3 明细含运营负责人，识别码 = 站点+商品ID（不含负责人）；
+    同识别码多行须先 sum，再 merge，避免订单行被笛卡尔放大。
+    """
+    need = [_COL_ID, _COL_FEE]
+    missing_cols = [c for c in need if c not in cang_zu_df.columns]
+    if missing_cols:
+        raise KeyError(f"仓租表缺少列 {missing_cols}")
+
+    work = cang_zu_df.copy()
+    work[_COL_ID] = work[_COL_ID].map(
+        lambda v: "" if pd.isna(v) else str(v).strip()
+    )
+    work[_COL_FEE] = round_rent_series(work[_COL_FEE]).fillna(0)
+    # 空识别码不参与挂接（无平台汇总写在第 1 行费用列，另途透传）
+    work = work.loc[~work[_COL_ID].isin(_BLANK_IDS)].copy()
+
+    before_n = len(work)
+    agg: dict[str, object] = {_COL_FEE: (_COL_FEE, "sum")}
+    # 追加行时尽量保留维度列（取首个非空）
+    for col in ("SKU", "商品ID", "平台", "站点", "平台商品ID识别码", _COL_OWNER):
+        if col in work.columns:
+            agg[col] = (col, _first_nonempty)
+
+    out = (
+        work.groupby(_COL_ID, as_index=False, dropna=False)
+        .agg(**{k: v for k, v in agg.items()})
+    )
+    out[_COL_FEE] = round_rent_series(out[_COL_FEE])
+    after_n = len(out)
+    if before_n != after_n:
+        print(
+            f"[汇总] 仓租按「{_COL_ID}」合并：{before_n} → {after_n} 行"
+            f"（同识别码多负责人已 sum）"
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -109,48 +165,67 @@ def merge_rent_onto_orders(
 
     步骤
     ----
-    1. left merge：只取仓租侧的「海外仓仓租费」
-    2. 追加：仓租有、订单统计没有的识别码行（避免仓租丢失）
-    3. 列对齐：结果列 = 订单统计全部列 + 「海外仓仓租费」；缺失列补 None
-    4. 「海外仓仓租费」空值填 0，避免后续加减出现 NaN
+    1. 仓租按识别码汇总海外仓仓租费
+    2. left merge：只取汇总后的「海外仓仓租费」
+    3. 追加：仓租有、订单统计没有的识别码行（避免仓租丢失）
+    4. 列对齐：结果列 = 订单统计全部列 + 「海外仓仓租费」
+    5. 「海外仓仓租费」空值填 0，避免后续加减出现 NaN
     """
-    need = ["站点商品ID识别码", "海外仓仓租费"]
-    missing_cols = [c for c in need if c not in cang_zu_df.columns]
-    if missing_cols:
-        raise KeyError(f"仓租表缺少列 {missing_cols}")
-    if "站点商品ID识别码" not in order_df.columns:
-        raise KeyError("订单统计缺少列「站点商品ID识别码」")
+    if _COL_ID not in order_df.columns:
+        raise KeyError(f"订单统计缺少列「{_COL_ID}」")
+
+    rent = _aggregate_rent_by_site_uid(cang_zu_df)
+    rent_fee = rent[[_COL_ID, _COL_FEE]].copy()
+    rent_total = float(round_rent(rent_fee[_COL_FEE].sum()))
 
     result = pd.merge(
         order_df,
-        cang_zu_df[need],
-        on="站点商品ID识别码",
+        rent_fee,
+        on=_COL_ID,
         how="left",
     )
 
-    # 仓租侧独有识别码：整行追加（含 K1_3 已写出的平台 / 平台商品ID识别码 等）
-    missing = cang_zu_df[
-        ~cang_zu_df["站点商品ID识别码"].isin(order_df["站点商品ID识别码"])
-    ]
-    # 空识别码不追加（无平台汇总行等）
+    order_ids = set(
+        order_df[_COL_ID]
+        .map(lambda v: "" if pd.isna(v) else str(v).strip())
+        .tolist()
+    )
+    missing = rent.loc[~rent[_COL_ID].isin(order_ids)].copy()
+    n_append = 0
     if not missing.empty:
-        blank_id = (
-            missing["站点商品ID识别码"].isna()
-            | missing["站点商品ID识别码"].astype(str).str.strip().isin(
-                ["", "nan", "None"]
-            )
-        )
-        missing = missing.loc[~blank_id]
-    if not missing.empty:
+        n_append = len(missing)
         result = pd.concat([result, missing], ignore_index=True)
-        print(f"[追加] 订单统计无匹配的仓租行 {len(missing)} 条（已并入结果）")
+        print(f"[追加] 订单统计无匹配的仓租行 {n_append} 条（已并入结果）")
 
-    expected_columns = list(order_df.columns) + ["海外仓仓租费"]
+    # 结果列 = 订单全部列 + 海外仓仓租费（追加行上的平台/站点等与订单同名列会保留）
+    expected_columns = list(order_df.columns)
+    if _COL_FEE not in expected_columns:
+        expected_columns.append(_COL_FEE)
+
     for col in expected_columns:
         if col not in result.columns:
             result[col] = None
 
-    result["海外仓仓租费"] = result["海外仓仓租费"].fillna(0)
+    result[_COL_FEE] = round_rent_series(result[_COL_FEE]).fillna(0)
+
+    matched_fee = float(
+        round_rent(
+            result.loc[
+                result[_COL_ID]
+                .map(lambda v: "" if pd.isna(v) else str(v).strip())
+                .isin(order_ids),
+                _COL_FEE,
+            ].sum()
+        )
+    )
+    append_fee = float(
+        round_rent(missing[_COL_FEE].sum()) if n_append else 0.0
+    )
+    print(
+        f"[对账] 仓租汇总合计={rent_total:.4f}；"
+        f"挂到订单行={matched_fee:.4f}；追加行={append_fee:.4f}；"
+        f"核对={matched_fee + append_fee:.4f}"
+    )
     return result[expected_columns]
 
 
@@ -169,7 +244,7 @@ def _read_unallocated_total(cang_zu_df: pd.DataFrame) -> float:
     val = cang_zu_df[col].iloc[0]
     if pd.isna(val):
         return 0.0
-    return float(val)
+    return float(round_rent(val))
 
 
 def attach_unallocated_rent_total(
@@ -198,7 +273,10 @@ def attach_unallocated_rent_total(
 def main() -> int:
     order_df, cang_zu_df, order_path = load_inputs()
     print(f"[读取] 订单统计 {len(order_df)} 行 ← {order_path}")
-    print(f"[读取] 仓租明细 {len(cang_zu_df)} 行 ← {_cang_zu_path()}")
+    print(
+        f"[读取] 仓租 Sheet「{_SHEET_PLATFORM}」{len(cang_zu_df)} 行"
+        f" ← {_cang_zu_path()}"
+    )
 
     result_df = merge_rent_onto_orders(order_df, cang_zu_df)
     result_df = attach_unallocated_rent_total(result_df, cang_zu_df)
@@ -209,10 +287,12 @@ def main() -> int:
     result_df.to_excel(output_path, index=False)
 
     fee_sum = float(
-        pd.to_numeric(result_df["海外仓仓租费"], errors="coerce").fillna(0).sum()
+        round_rent(
+            pd.to_numeric(result_df[_COL_FEE], errors="coerce").fillna(0).sum()
+        )
     )
     matched = int(
-        (pd.to_numeric(result_df["海外仓仓租费"], errors="coerce").fillna(0) != 0).sum()
+        (pd.to_numeric(result_df[_COL_FEE], errors="coerce").fillna(0) != 0).sum()
     )
     print(
         f"处理完成：结果 {len(result_df)} 行，"
