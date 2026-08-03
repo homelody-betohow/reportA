@@ -75,12 +75,23 @@ _PLATFORM_SHOP_RENT_SQL = """
 _PLATFORM_SHOP_OWNER_SITE_SQL = """
     SELECT
         TRIM(market_code) AS market_code,
-        TRIM(market_region) AS market_region,
         TRIM(ops_owner) AS ops_owner,
+        TRIM(market_region) AS market_region
     FROM platform_shop
     WHERE shop_status = 1
       AND TRIM(market_code) <> ''
       AND TRIM(ops_owner) <> ''
+      AND TRIM(market_region) <> ''
+"""
+
+# 运营负责人为空时：按平台取全部启用店铺站点
+_PLATFORM_SHOP_SITE_SQL = """
+    SELECT
+        TRIM(market_code) AS market_code,
+        TRIM(market_region) AS market_region
+    FROM platform_shop
+    WHERE shop_status = 1
+      AND TRIM(market_code) <> ''
       AND TRIM(market_region) <> ''
 """
 
@@ -248,7 +259,7 @@ def fetch_owner_platform_sites() -> dict[tuple[str, str], frozenset[str]]:
     """
     启用店铺：(market_code, ops_owner) → frozenset(market_region)。
 
-    供海外仓仓租站点分摊：费用必须落在「平台 + 运营负责人」对应店铺站点内。
+    供海外仓仓租站点分摊：有负责人时，费用落在「平台 + 运营负责人」对应店铺站点内。
     """
     db = get_db_manager()
     conn = db.get_connection()
@@ -268,6 +279,32 @@ def fetch_owner_platform_sites() -> dict[tuple[str, str], frozenset[str]]:
         if not code or not owner or not region:
             continue
         buckets.setdefault((code, owner), set()).add(region)
+    return {k: frozenset(v) for k, v in buckets.items()}
+
+
+def fetch_platform_sites() -> dict[str, frozenset[str]]:
+    """
+    启用店铺：market_code → frozenset(market_region)。
+
+    供运营负责人为空时的站点分摊：不按负责人过滤，取该平台全部启用站点。
+    """
+    db = get_db_manager()
+    conn = db.get_connection()
+    cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cur.execute(_PLATFORM_SHOP_SITE_SQL)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    buckets: dict[str, set[str]] = {}
+    for r in rows:
+        code = str(r.get("market_code") or "").strip()
+        region = str(r.get("market_region") or "").strip()
+        if not code or not region:
+            continue
+        buckets.setdefault(code, set()).add(region)
     return {k: frozenset(v) for k, v in buckets.items()}
 
 

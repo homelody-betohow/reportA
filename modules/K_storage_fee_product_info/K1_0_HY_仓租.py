@@ -8,8 +8,8 @@ K1_0_HY_仓租.py — 鸿羽仓租分摊（DB / K0 版）
   3. 用 product_sku_mapping（HY / warehouse）查 warehouse_sku → product_sku
      - 未命中：插入待更新行（is_active=0），提示人工补全后重新执行，本轮中止
   4. product_sku → product_uid（商品ID）
-  5. 用 K0「各平台商品ID周转明细」，按有效销售平台（排除无/其他/ALL）的
-     「可售库存-可调」占比分摊「海外仓仓租费」，并透传「运营负责人」；
+  5. 用 K0「各平台SKU库存周转明细」，按商品ID+销售平台+运营负责人的
+     「可售库存-可调」占比分摊「海外仓仓租费」（同平台多名负责人各占一行）；
      无法分摊部分进 Sheet2
 
 用法：
@@ -55,12 +55,12 @@ PARTNER_TYPE_WH = "warehouse"
 PARTNER_NAME_HY = "鸿羽海外仓"
 WH_CODE_COL = "仓库代码(Warehouse Code)"
 BARCODE_COL = "自定义编码（Barcode）"
-# K0 sheet2：销售平台 + 商品ID 汇总
-KU_CUN_SHEET = "各平台商品ID周转明细"
+# K0 sheet1：各平台 SKU 明细（含商品ID / 销售平台 / 可售库存-可调 / 运营负责人）
+KU_CUN_SHEET = "各平台SKU库存周转明细"
 KU_CUN_FILE_SUFFIX = "库存动销明细.xlsx"
 PLATFORM_COL = "销售平台"
 QTY_COL = "可售库存-可调"
-OWNER_COL = "运营负责人"  # 来自 K0「各平台商品ID周转明细」
+OWNER_COL = "运营负责人"  # 来自 K0「各平台SKU库存周转明细」
 # 不参与有效分摊的销售平台：库存不进分母，仓租不进 Sheet1；
 # 仅当商品无其它有效平台库存时，整笔进入 Sheet2「无平台-仓租费用」
 NO_SITE_PLATFORMS = frozenset({"无", "其他", "ALL"})
@@ -499,18 +499,26 @@ def _to_excel_safe(df: pd.DataFrame, path: str, **kwargs) -> None:
 
 def _prepare_platform_qty_ratio(ku_cun_df: pd.DataFrame) -> pd.DataFrame:
     """
-    按商品ID 计算有效销售平台的库存占比。
+    按「商品ID + 销售平台 + 运营负责人」计算有效库存占比。
+    同一平台下多名负责人（库存>0）各占一行，按各自库存占该商品ID有效库存合计的比例分摊。
     「无」「其他」「ALL」库存不进分母，避免稀释有效平台分摊。
     有效库存合计为 0 时占比为 NaN（整笔进无平台）。
-    若有「运营负责人」，按商品ID+销售平台取首行透传。
     """
     out = ku_cun_df.copy()
     out[QTY_COL] = pd.to_numeric(out[QTY_COL], errors="coerce").fillna(0)
-    # 同一商品ID+平台多行先合并，避免占比合计 > 1
-    agg: dict[str, str] = {QTY_COL: "sum"}
-    if OWNER_COL in out.columns:
-        agg[OWNER_COL] = "first"
-    out = out.groupby(["商品ID", PLATFORM_COL], as_index=False, dropna=False).agg(agg)
+    if OWNER_COL not in out.columns:
+        out[OWNER_COL] = ""
+    else:
+        out[OWNER_COL] = out[OWNER_COL].map(
+            lambda v: "" if pd.isna(v) else str(v).strip()
+        )
+    # 同一商品ID+平台+负责人多行先合并（如 TEMU 下多店铺站点）
+    out = (
+        out.groupby(["商品ID", PLATFORM_COL, OWNER_COL], as_index=False, dropna=False)[
+            QTY_COL
+        ]
+        .sum()
+    )
     is_no_site = out[PLATFORM_COL].isin(NO_SITE_PLATFORMS)
     out["_有效库存"] = out[QTY_COL].where(~is_no_site, 0.0)
     effective_total = out.groupby("商品ID")["_有效库存"].transform("sum")
@@ -781,9 +789,10 @@ warn_blank_product_uid(hy_df_2)
 step1_path = _save_step1(hy_df_2, file_paths[0].rsplit("\\", 1)[0])
 print(f"平台分摊，结果已保存到{step1_path}")
 
-# ---------- 4. K0「各平台商品ID周转明细」按销售平台分摊 ----------
-# 口径：同一商品ID 下，仅对有效销售平台（排除 无/其他/ALL）按「可售库存-可调」占比分摊；
-#   海外仓仓租费 = 总仓租 × (该平台有效库存 / 该商品ID有效库存合计)
+# ---------- 4. K0「各平台SKU库存周转明细」按销售平台+运营负责人分摊 ----------
+# 口径：读 SKU 明细后按商品ID+销售平台+运营负责人汇总库存；
+#   同一商品ID 下仅对有效销售平台（排除 无/其他/ALL）按「可售库存-可调」占比分摊；
+#   同平台多名负责人各自成行：海外仓仓租费 = 总仓租 × (该负责人该平台有效库存 / 该商品ID有效库存合计)
 # 无有效库存 / 无匹配 → 整笔进 Sheet2「无平台-仓租费用」（总额守恒：Sheet1+Sheet2=总仓租）
 ku_cun_path = (
     fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\仓租\{ku_cun_date}{KU_CUN_FILE_SUFFIX}"
@@ -829,7 +838,7 @@ result_DF = round_rent_columns(result_DF, ["海外仓仓租费"])
 hy_have_site_cang_zu = round_rent(result_DF["海外仓仓租费"].fillna(0).sum())
 hy_no_site_fen_tan = round_rent(float(hy_all_cang_zu) - float(hy_have_site_cang_zu))
 print(
-    f"[分摊] 维度=有效销售平台+商品ID+{QTY_COL}（不含无/其他/ALL）；"
+    f"[分摊] 维度=商品ID+销售平台+运营负责人+{QTY_COL}（不含无/其他/ALL）；"
     f"总仓租={float(hy_all_cang_zu):.4f}，"
     f"已分摊到销售平台={float(hy_have_site_cang_zu):.4f}，"
     f"无平台-仓租费用={float(hy_no_site_fen_tan):.4f}，"
