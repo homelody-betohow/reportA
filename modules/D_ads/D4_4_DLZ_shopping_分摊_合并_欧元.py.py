@@ -24,29 +24,35 @@ df2 = pd.read_excel(file_path_2)
 df1.rename(columns={'SKU-站点识别码': 'SKU-站点识别码', '费用': '费用', 'SKU': 'SKU'}, inplace=True)
 df2.rename(columns={'SKU-站点识别码': 'SKU-站点识别码', '费用': '费用', 'SKU': 'SKU'}, inplace=True)
 
-# 合并数据
-merged_df = pd.merge(df1, df2, on='SKU-站点识别码', how='left', suffixes=('_df1', '_df2'))
+# D4_3 若全部站点无销量，分摊明细只有「无销量的站点」两列，不含 SKU-站点识别码；此时以 shopping 为底表
+if 'SKU-站点识别码' not in df1.columns:
+    print('分摊明细-美元 无 SKU 行（全为无销量站点），跳过 merge，以 shopping 数据为底表')
+    result_df = df2[['SKU-站点识别码', '站点', 'SKU', '费用']].copy()
+    result_df = result_df.rename(columns={'费用': '广告花费-美元'})
+else:
+    # 合并数据
+    merged_df = pd.merge(df1, df2, on='SKU-站点识别码', how='left', suffixes=('_df1', '_df2'))
 
-# 处理合并后的SKU，优先使用df1的SKU，如果为空则使用df2的
-merged_df['SKU'] = merged_df['SKU_df1'].fillna(merged_df['SKU_df2'])
+    # 处理合并后的SKU，优先使用df1的SKU，如果为空则使用df2的
+    merged_df['SKU'] = merged_df['SKU_df1'].fillna(merged_df['SKU_df2'])
 
-# 计算总的广告花费
-merged_df['广告花费-美元'] = merged_df['费用_df1'].fillna(0) + merged_df['费用_df2'].fillna(0)
+    # 计算总的广告花费
+    merged_df['广告花费-美元'] = merged_df['费用_df1'].fillna(0) + merged_df['费用_df2'].fillna(0)
 
-# 创建结果 DataFrame
-result_df = merged_df[['SKU-站点识别码', '站点_df1', 'SKU', '广告花费-美元']].copy()  # 显式创建副本
+    # 创建结果 DataFrame
+    result_df = merged_df[['SKU-站点识别码', '站点_df1', 'SKU', '广告花费-美元']].copy()  # 显式创建副本
 
-# 重命名列
-result_df = result_df.rename(columns={'站点_df1': '站点'})
+    # 重命名列
+    result_df = result_df.rename(columns={'站点_df1': '站点'})
 
-# 检查未匹配的行
-unmatched_df = df2[~df2['SKU-站点识别码'].isin(df1['SKU-站点识别码'])]
+    # 检查未匹配的行
+    unmatched_df = df2[~df2['SKU-站点识别码'].isin(df1['SKU-站点识别码'])]
 
-# 如果有未匹配的行，将它们添加到结果中
-if not unmatched_df.empty:
-    unmatched_df = unmatched_df.copy().rename(columns={'费用': '广告花费-美元'})
-    unmatched_df = unmatched_df[['SKU-站点识别码', '站点', 'SKU', '广告花费-美元']]
-    result_df = pd.concat([result_df, unmatched_df], ignore_index=True)
+    # 如果有未匹配的行，将它们添加到结果中
+    if not unmatched_df.empty:
+        unmatched_df = unmatched_df.copy().rename(columns={'费用': '广告花费-美元'})
+        unmatched_df = unmatched_df[['SKU-站点识别码', '站点', 'SKU', '广告花费-美元']]
+        result_df = pd.concat([result_df, unmatched_df], ignore_index=True)
 
 # 添加广告费(非AMZ)列                  美元 转 欧元
 result_df['广告费(非AMZ)'] = np.round(result_df['广告花费-美元'] * USD_to_EUR, 2)
@@ -112,6 +118,11 @@ if '无销量的站点' in df1.columns and '需要摊分花费（美元）' in d
             sku_file_path = fr'{DESKTOP_ROOT}\DLZ-FR_广告分摊sku.xlsx'
 
             sku_df = pd.read_excel(sku_file_path)
+            # 桌面模板可能用「儿子-*」列名，统一为流水线用的「SKU-*」
+            sku_df = sku_df.rename(columns={
+                '儿子-站点识别码': 'SKU-站点识别码',
+                '儿子-平台识别码': 'SKU-平台识别码',
+            })
 
             # 确保SKU列没有重复值
             sku_df.drop_duplicates(subset=['SKU'], inplace=True)
@@ -122,7 +133,10 @@ if '无销量的站点' in df1.columns and '需要摊分花费（美元）' in d
             # 检查sku_df中是否有必要的列
             required_columns = ['SKU', '站点', '映射平台', 'SKU-站点识别码', 'SKU-平台识别码']
             if not all(col in sku_df.columns for col in required_columns):
-                raise ValueError(f"文件 {sku_file_path} 中缺少必要的列，请检查文件格式。")
+                raise ValueError(
+                    f"文件 {sku_file_path} 中缺少必要的列，请检查文件格式。"
+                    f"需要 {required_columns}，实际 {list(sku_df.columns)}"
+                )
 
             # 从sku_df中提取需要的列，并确保列的顺序
             sku_df = sku_df[required_columns].copy()
