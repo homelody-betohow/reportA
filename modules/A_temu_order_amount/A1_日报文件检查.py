@@ -1,30 +1,34 @@
 """
-A0_日报文件检查
+A1_日报文件检查
 
-检查网络盘日报源文件是否齐全，若存在则复制到桌面报表周期目录（如：日报7.1-7.4）。
+检查网络盘源文件是否齐全，若存在则复制到桌面报表周期目录
+（如：日报7.1-7.4 / 月报7.1-7.31）。
 
-源目录一：\\\\Betohow\\数据报表\\报表自动化下载\\其它报表\\每天
+由 A0_set_date.folder_name 选择源根：
+  日报 → …\\每天
+  月报 → …\\每月
+
+源目录一：\\\\Betohow\\数据报表\\报表自动化下载\\其它报表\\{每天|每月}
   - ERP订单、RMA下载
   - transaction交易明细
   - 鸿羽仓二次上架明细
   - 亚马逊利润报表
 
-源目录二：\\\\Betohow\\数据报表\\报表自动化下载\\仓租下载\\每天
+源目录二：\\\\Betohow\\数据报表\\报表自动化下载\\仓租下载\\{每天|每月}
   - 4px法国仓仓租下载
   - 鸿羽仓
 
-源目录三：\\\\Betohow\\数据报表\\报表自动化下载\\广告下载\\每天
-  - OTTO / Real / DLZ / Mano（子目录 M.D）
-  - 测评表（文件名含 report_date）
+源目录三：\\\\Betohow\\数据报表\\报表自动化下载\\广告下载\\{每天|每月}
+  - OTTO / Real / DLZ / Mano
+  - 测评表（始终从「广告下载\\每天\\测评表」取 report_date 文件）
 
-源目录四：\\\\Betohow\\数据报表\\报表自动化下载\\秒杀下载\\每天
-  - 子目录 report_date（YYYY-MM-DD，旧版为 M.D）
+秒杀费用已由 E1 从 DB amz_seckill_cost 读取，本脚本不再检查/复制网络盘秒杀文件。
 
 日期规则与 A0_set_date.py 一致：
-  - ERP / 亚马逊利润 / 二次上架 / 广告 / 秒杀：以 report_date（今天-3天）定位子目录
-  - 仓租：子目录 report_date（YYYY-MM-DD，旧版为 M.D）
-  - transaction：以当天子目录 + transaction_date 文件名
-  - 测评表：以 report_date 的 YYYY-MM-DD 定位文件名
+  - 日报子目录：YYYY-MM-DD 或 M.D（仓租优先 ISO）
+  - 月报子目录：YYYY-MM / M月 / M月份 / 月末 M.D 等（见各 _build_*）
+  - transaction：日报用当天子目录 + transaction_date；
+    月报用月末 M.D 子目录 + 文件名含 shared_date，复制时按 transaction_date 命名
 """
 from __future__ import annotations
 
@@ -59,18 +63,36 @@ from config.A0_set_date import (  # noqa: E402
 from common.runall_utils import setup_console_encoding  # noqa: E402
 from common.style import Color  # noqa: E402
 
-SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\其它报表\每天")
-RENT_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\仓租下载\每天")
-AD_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\广告下载\每天")
-FLASH_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\秒杀下载\每天")
+# 日报源根（每天）
+DAILY_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\其它报表\每天")
+DAILY_RENT_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\仓租下载\每天")
+DAILY_AD_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\广告下载\每天")
 
-ERP_SOURCE_DIR = SOURCE_BASE / "ERP订单、RMA下载"
-TRANSACTION_SOURCE_DIR = SOURCE_BASE / "transaction交易明细"
-RELISTING_SOURCE_DIR = SOURCE_BASE / "鸿羽仓二次上架明细"
-AMAZON_PROFIT_SOURCE_DIR = SOURCE_BASE / "亚马逊利润报表"
+# 月报源根（每月）
+MONTHLY_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\其它报表\每月")
+MONTHLY_RENT_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\仓租下载\每月")
+MONTHLY_AD_SOURCE_BASE = Path(r"\\Betohow\数据报表\报表自动化下载\广告下载\每月")
 
-FPX_RENT_SOURCE_DIR = RENT_SOURCE_BASE / "4px法国仓仓租下载"
-HY_RENT_SOURCE_DIR = RENT_SOURCE_BASE / "鸿羽仓"
+_VALID_MODES = ("日报", "月报")
+
+
+@dataclass(frozen=True)
+class SourceRoots:
+    other: Path
+    rent: Path
+    ad: Path
+    is_monthly: bool
+
+
+@dataclass(frozen=True)
+class DateKeys:
+    report_iso: str
+    report_ym: str
+    report_md: str
+    month_num: str
+    month_label: str
+    month_rent_label: str
+    today_iso: str
 
 
 @dataclass(frozen=True)
@@ -85,6 +107,44 @@ class FileCheckItem:
     must_not_contain: str = ""
     copy_all: bool = False
     copy_recursive: bool = False
+
+
+def _resolve_source_roots() -> SourceRoots:
+    if folder_name == "月报":
+        return SourceRoots(
+            other=MONTHLY_SOURCE_BASE,
+            rent=MONTHLY_RENT_SOURCE_BASE,
+            ad=MONTHLY_AD_SOURCE_BASE,
+            is_monthly=True,
+        )
+    if folder_name == "日报":
+        return SourceRoots(
+            other=DAILY_SOURCE_BASE,
+            rent=DAILY_RENT_SOURCE_BASE,
+            ad=DAILY_AD_SOURCE_BASE,
+            is_monthly=False,
+        )
+    raise ValueError(f"folder_name 只能是 {_VALID_MODES}，当前为: {folder_name!r}")
+
+
+def _build_date_keys() -> DateKeys:
+    return DateKeys(
+        report_iso=report_date.strftime("%Y-%m-%d"),
+        report_ym=report_date.strftime("%Y-%m"),
+        report_md=f"{report_date.month}.{report_date.day}",
+        month_num=str(report_date.month),
+        month_label=f"{report_date.month}月",
+        month_rent_label=f"{report_date.month}月份",
+        today_iso=datetime.today().strftime("%Y-%m-%d"),
+    )
+
+
+def _first_existing_dir(*candidates: Path) -> Path:
+    """返回第一个存在的目录；若皆不存在则返回首个（便于报错提示）。"""
+    for path in candidates:
+        if path.is_dir():
+            return path
+    return candidates[0]
 
 
 def _is_valid_file(path: Path) -> bool:
@@ -175,11 +235,37 @@ def _pick_recursive_source_files(
     return unique
 
 
-def _build_other_report_items(period_dir: Path, report_iso: str, report_md: str, today_iso: str) -> list[FileCheckItem]:
+def _resolve_iso_or_md_dir(base_dir: Path, keys: DateKeys) -> Path:
+    """优先 YYYY-MM-DD，兼容旧版 M.D 子目录（日报仓租）。"""
+    return _first_existing_dir(base_dir / keys.report_iso, base_dir / keys.report_md)
+
+
+def _build_other_report_items(
+    period_dir: Path, roots: SourceRoots, keys: DateKeys
+) -> list[FileCheckItem]:
+    erp_dir = roots.other / "ERP订单、RMA下载"
+    tx_dir = roots.other / "transaction交易明细"
+    relist_dir = roots.other / "鸿羽仓二次上架明细"
+    profit_dir = roots.other / "亚马逊利润报表"
+
+    if roots.is_monthly:
+        erp_source = erp_dir / keys.report_ym
+        tx_source = tx_dir / keys.report_md
+        # 月报源文件名多为 shared_date（整月），桌面仍按 transaction_date 命名供 B4 使用
+        tx_prefer = shared_date
+        relist_source = relist_dir / keys.month_label
+        profit_source = _first_existing_dir(profit_dir / keys.report_ym, profit_dir)
+    else:
+        erp_source = erp_dir / keys.report_iso
+        tx_source = tx_dir / keys.today_iso
+        tx_prefer = transaction_date
+        relist_source = relist_dir / keys.report_md
+        profit_source = profit_dir / keys.report_iso
+
     return [
         FileCheckItem(
             label="订单统计",
-            source_dir=ERP_SOURCE_DIR / report_iso,
+            source_dir=erp_source,
             dest_dir=period_dir / "订单统计",
             dest_name=f"订单统计-{shared_date}.xlsx",
             patterns=("订单统计*.xlsx", "*订单统计*.xlsx"),
@@ -187,7 +273,7 @@ def _build_other_report_items(period_dir: Path, report_iso: str, report_md: str,
         ),
         FileCheckItem(
             label="RMA退款",
-            source_dir=ERP_SOURCE_DIR / report_iso,
+            source_dir=erp_source,
             dest_dir=period_dir / "RMA",
             dest_name=f"RMA-{shared_date}.xlsx",
             patterns=("RMA*.xlsx",),
@@ -195,31 +281,33 @@ def _build_other_report_items(period_dir: Path, report_iso: str, report_md: str,
         ),
         FileCheckItem(
             label="transaction-已发放",
-            source_dir=TRANSACTION_SOURCE_DIR / today_iso,
+            source_dir=tx_source,
             dest_dir=period_dir / "transaction交易明细",
             dest_name=f"transaction交易明细-已发放订单{transaction_date}.xlsx",
             patterns=(
+                f"transaction交易明细-已发放订单{tx_prefer}.xlsx",
                 f"transaction交易明细-已发放订单{transaction_date}.xlsx",
                 "transaction交易明细-已发放订单*.xlsx",
             ),
-            prefer_contains=transaction_date,
+            prefer_contains=tx_prefer,
             must_contain="已发放",
         ),
         FileCheckItem(
             label="transaction-已推迟",
-            source_dir=TRANSACTION_SOURCE_DIR / today_iso,
+            source_dir=tx_source,
             dest_dir=period_dir / "transaction交易明细",
             dest_name=f"transaction交易明细-已推迟订单{transaction_date}.xlsx",
             patterns=(
+                f"transaction交易明细-已推迟订单{tx_prefer}.xlsx",
                 f"transaction交易明细-已推迟订单{transaction_date}.xlsx",
                 "transaction交易明细-已推迟订单*.xlsx",
             ),
-            prefer_contains=transaction_date,
+            prefer_contains=tx_prefer,
             must_contain="已推迟",
         ),
         FileCheckItem(
             label="鸿羽仓二次上架",
-            source_dir=RELISTING_SOURCE_DIR / report_md,
+            source_dir=relist_source,
             dest_dir=period_dir / "二次上架",
             dest_name=f"鸿羽仓-二次上架明细-{shared_date}.xls",
             patterns=(
@@ -232,7 +320,7 @@ def _build_other_report_items(period_dir: Path, report_iso: str, report_md: str,
         ),
         FileCheckItem(
             label="SellerSku利润报表",
-            source_dir=AMAZON_PROFIT_SOURCE_DIR / report_iso,
+            source_dir=profit_source,
             dest_dir=period_dir / "SellerSku利润报表",
             dest_name=SELLERSKU_PROFIT_FILE_NAME,
             patterns=(
@@ -246,11 +334,27 @@ def _build_other_report_items(period_dir: Path, report_iso: str, report_md: str,
     ]
 
 
-def _build_ad_check_items(period_dir: Path, report_iso: str, report_md: str) -> list[FileCheckItem]:
+def _build_ad_check_items(
+    period_dir: Path, roots: SourceRoots, keys: DateKeys
+) -> list[FileCheckItem]:
+    if roots.is_monthly:
+        otto_source = roots.ad / "OTTO" / keys.month_num
+        real_source = roots.ad / "Real" / keys.report_ym
+        dlz_source = roots.ad / "DLZ" / keys.report_ym
+        mano_source = roots.ad / "Mano" / keys.report_ym
+    else:
+        otto_source = roots.ad / "OTTO" / keys.report_md
+        real_source = roots.ad / "Real" / keys.report_md
+        dlz_source = roots.ad / "DLZ" / keys.report_md
+        mano_source = roots.ad / "Mano" / keys.report_md
+
+    # 测评表只落在「广告下载\每天\测评表」，月报取月末 report_iso
+    review_source = DAILY_AD_SOURCE_BASE / "测评表"
+
     return [
         FileCheckItem(
             label="OTTO广告",
-            source_dir=AD_SOURCE_BASE / "OTTO" / report_md,
+            source_dir=otto_source,
             dest_dir=period_dir / "广告" / "OTTO",
             dest_name=f"OTTO-广告数据-{shared_date}.csv",
             patterns=(
@@ -261,7 +365,7 @@ def _build_ad_check_items(period_dir: Path, report_iso: str, report_md: str) -> 
         ),
         FileCheckItem(
             label="REAL广告",
-            source_dir=AD_SOURCE_BASE / "Real" / report_md,
+            source_dir=real_source,
             dest_dir=period_dir / "广告" / "REAL",
             dest_name="",
             patterns=(f"*{shared_date}.csv", "REAL*.csv"),
@@ -270,7 +374,7 @@ def _build_ad_check_items(period_dir: Path, report_iso: str, report_md: str) -> 
         ),
         FileCheckItem(
             label="DLZ广告",
-            source_dir=AD_SOURCE_BASE / "DLZ" / report_md,
+            source_dir=dlz_source,
             dest_dir=period_dir / "广告" / "DLZ",
             dest_name="",
             patterns=(f"*{shared_date}.csv", "DLZ*.csv"),
@@ -279,7 +383,7 @@ def _build_ad_check_items(period_dir: Path, report_iso: str, report_md: str) -> 
         ),
         FileCheckItem(
             label="MANO广告",
-            source_dir=AD_SOURCE_BASE / "Mano" / report_md,
+            source_dir=mano_source,
             dest_dir=period_dir / "广告" / "MANO",
             dest_name="",
             patterns=(f"*{shared_date}.csv",),
@@ -288,56 +392,39 @@ def _build_ad_check_items(period_dir: Path, report_iso: str, report_md: str) -> 
         ),
         FileCheckItem(
             label="测评表",
-            source_dir=AD_SOURCE_BASE / "测评表",
+            source_dir=review_source,
             dest_dir=period_dir / "测评表",
-            dest_name=f"测评表{report_iso}.xlsx",
+            dest_name=f"测评表{keys.report_iso}.xlsx",
             patterns=(
-                f"测评表{report_iso}.xlsx",
+                f"测评表{keys.report_iso}.xlsx",
                 "测评表*.xlsx",
             ),
-            prefer_contains=report_iso,
+            prefer_contains=keys.report_iso,
         ),
     ]
 
 
-def _resolve_flash_source_dir(report_iso: str, report_md: str) -> Path:
-    """秒杀目录优先 YYYY-MM-DD，兼容旧版 M.D 子目录。"""
-    iso_dir = FLASH_SOURCE_BASE / report_iso
-    if iso_dir.is_dir():
-        return iso_dir
-    return FLASH_SOURCE_BASE / report_md
+def _resolve_rent_source_dir(
+    base_dir: Path, roots: SourceRoots, keys: DateKeys, *, kind: str
+) -> Path:
+    """仓租子目录：日报 ISO/M.D；月报 4PX=YYYY-MM，鸿羽=M月份。"""
+    if not roots.is_monthly:
+        return _resolve_iso_or_md_dir(base_dir, keys)
+    if kind == "4px":
+        chinese = base_dir / f"{report_date.year}年{report_date.month}月份"
+        return _first_existing_dir(base_dir / keys.report_ym, chinese)
+    return base_dir / keys.month_rent_label
 
 
-def _build_flash_check_items(period_dir: Path, report_iso: str, report_md: str) -> list[FileCheckItem]:
-    return [
-        FileCheckItem(
-            label="秒杀数据",
-            source_dir=_resolve_flash_source_dir(report_iso, report_md),
-            dest_dir=period_dir / "秒杀",
-            dest_name=f"秒杀数据-{shared_date}.xlsx",
-            patterns=(
-                f"秒杀数据-{shared_date}.xlsx",
-                "秒杀数据-*.xlsx",
-            ),
-            prefer_contains=shared_date,
-            must_not_contain="副本",
-        ),
-    ]
-
-
-def _resolve_rent_source_dir(base_dir: Path, report_iso: str, report_md: str) -> Path:
-    """仓租目录优先 YYYY-MM-DD，兼容旧版 M.D 子目录。"""
-    iso_dir = base_dir / report_iso
-    if iso_dir.is_dir():
-        return iso_dir
-    return base_dir / report_md
-
-
-def _build_rent_check_items(period_dir: Path, report_iso: str, report_md: str) -> list[FileCheckItem]:
+def _build_rent_check_items(
+    period_dir: Path, roots: SourceRoots, keys: DateKeys
+) -> list[FileCheckItem]:
+    fpx_base = roots.rent / "4px法国仓仓租下载"
+    hy_base = roots.rent / "鸿羽仓"
     return [
         FileCheckItem(
             label="4PX法国仓仓租",
-            source_dir=_resolve_rent_source_dir(FPX_RENT_SOURCE_DIR, report_iso, report_md),
+            source_dir=_resolve_rent_source_dir(fpx_base, roots, keys, kind="4px"),
             dest_dir=period_dir / "仓租" / "4PX",
             dest_name=f"4PX法国仓-仓租明细-{shared_date}.xlsx",
             patterns=(
@@ -349,7 +436,7 @@ def _build_rent_check_items(period_dir: Path, report_iso: str, report_md: str) -
         ),
         FileCheckItem(
             label="鸿羽仓仓租",
-            source_dir=_resolve_rent_source_dir(HY_RENT_SOURCE_DIR, report_iso, report_md),
+            source_dir=_resolve_rent_source_dir(hy_base, roots, keys, kind="hy"),
             dest_dir=period_dir / "仓租" / "鸿羽",
             dest_name="",
             patterns=(
@@ -362,16 +449,12 @@ def _build_rent_check_items(period_dir: Path, report_iso: str, report_md: str) -
     ]
 
 
-def _build_check_items() -> list[FileCheckItem]:
-    report_iso = report_date.strftime("%Y-%m-%d")
-    report_md = f"{report_date.month}.{report_date.day}"
-    today_iso = datetime.today().strftime("%Y-%m-%d")
+def _build_check_items(roots: SourceRoots, keys: DateKeys) -> list[FileCheckItem]:
     period_dir = Path(REPORT_PERIOD_DIR)
     return (
-        _build_other_report_items(period_dir, report_iso, report_md, today_iso)
-        + _build_rent_check_items(period_dir, report_iso, report_md)
-        + _build_ad_check_items(period_dir, report_iso, report_md)
-        + _build_flash_check_items(period_dir, report_iso, report_md)
+        _build_other_report_items(period_dir, roots, keys)
+        + _build_rent_check_items(period_dir, roots, keys)
+        + _build_ad_check_items(period_dir, roots, keys)
     )
 
 
@@ -462,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_console_encoding()
 
     parser = argparse.ArgumentParser(
-        description="检查网络盘日报源文件并复制到桌面报表目录"
+        description="检查网络盘日报/月报源文件并复制到桌面报表目录"
     )
     parser.add_argument(
         "--dry-run",
@@ -471,40 +554,51 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if folder_name != "日报":
+    if folder_name not in _VALID_MODES:
         print(
             f"{Color.RED}当前 A0_set_date.folder_name={folder_name!r}，"
-            f"本脚本仅适用于「日报」模式。{Color.RESET}"
+            f"仅支持 {_VALID_MODES}。{Color.RESET}"
         )
         return 1
 
+    try:
+        roots = _resolve_source_roots()
+    except ValueError as exc:
+        print(f"{Color.RED}{exc}{Color.RESET}")
+        return 1
+
+    keys = _build_date_keys()
     period_dir = Path(REPORT_PERIOD_DIR)
+    mode_label = folder_name
+
     print(f"{Color.CYAN}{'=' * 72}{Color.RESET}")
-    print(f"{Color.BOLD}日报文件检查{Color.RESET}")
+    print(f"{Color.BOLD}{mode_label}文件检查{Color.RESET}")
     print(f"统计区间：{Color.YELLOW}{shared_date}{Color.RESET}")
-    print(f"report_date：{report_date.strftime('%Y-%m-%d')}（ERP / 二次上架 / 利润报表 / 仓租 / 广告 / 秒杀）")
+    print(
+        f"report_date：{keys.report_iso}"
+        f"（ERP / 二次上架 / 利润报表 / 仓租 / 广告）"
+    )
     print(f"transaction_date：{Color.YELLOW}{transaction_date}{Color.RESET}")
     print(f"目标目录：{Color.YELLOW}{period_dir}{Color.RESET}")
-    print(f"源根目录（其它报表）：{SOURCE_BASE}")
-    print(f"源根目录（仓租下载）：{RENT_SOURCE_BASE}")
-    print(f"源根目录（广告下载）：{AD_SOURCE_BASE}")
-    print(f"源根目录（秒杀下载）：{FLASH_SOURCE_BASE}")
+    print(f"源根目录（其它报表）：{roots.other}")
+    print(f"源根目录（仓租下载）：{roots.rent}")
+    print(f"源根目录（广告下载）：{roots.ad}")
+    if roots.is_monthly:
+        print(f"测评表源目录（固定每天）：{DAILY_AD_SOURCE_BASE / '测评表'}")
     print(f"{Color.CYAN}{'=' * 72}{Color.RESET}\n")
 
-    if (
-        not SOURCE_BASE.is_dir()
-        and not RENT_SOURCE_BASE.is_dir()
-        and not AD_SOURCE_BASE.is_dir()
-        and not FLASH_SOURCE_BASE.is_dir()
-    ):
+    accessible = any(
+        base.is_dir()
+        for base in (roots.other, roots.rent, roots.ad, DAILY_AD_SOURCE_BASE)
+    )
+    if not accessible:
         print(
-            f"{Color.RED}无法访问网络源目录：{SOURCE_BASE}、{RENT_SOURCE_BASE}、"
-            f"{AD_SOURCE_BASE} 或 {FLASH_SOURCE_BASE}"
+            f"{Color.RED}无法访问网络源目录：{roots.other}、{roots.rent} 或 {roots.ad}"
             f"\n请确认已连接 \\\\Betohow 共享盘。{Color.RESET}"
         )
         return 1
 
-    items = _build_check_items()
+    items = _build_check_items(roots, keys)
     ok_count = 0
     missing: list[tuple[str, str]] = []
 

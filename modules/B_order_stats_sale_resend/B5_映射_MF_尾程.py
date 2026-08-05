@@ -576,8 +576,8 @@ def _read_mmf_fee_payload(json_path: Path) -> dict:
 def _merge_missing_into_mmf_fee_json(df: pd.DataFrame, json_path: Path) -> int:
     """
     将仍缺「单个-MF-派送费」的记录直接追加进 mano_mf_fee.json。
-    - 已存在的 SKU-站点识别码：保留原费用，仅补空的 映射站点/SKU；
-    - 不存在的：追加一条，单个-MF-派送费=null，待手工填写后重跑 B5。
+    - 已存在的 SKU-站点识别码：保留原费用与原顺序，仅补空的 映射站点/SKU；
+    - 不存在的：追加到 items 末尾，单个-MF-派送费=null，待手工填写后重跑 B5。
     返回新追加条数。
     """
     miss_df = df.loc[df[_COL_UNIT_FEE].isna()].copy()
@@ -622,6 +622,7 @@ def _merge_missing_into_mmf_fee_json(df: pd.DataFrame, json_path: Path) -> int:
             row[_COL_SKU_SITE] = key
         existing_items.append(row)
 
+    # 新增待填一律追加到文档末尾（不重排已有 items，便于对照手工填写）
     n_added = 0
     for key, row in pending.items():
         if key in existing_keys:
@@ -629,12 +630,12 @@ def _merge_missing_into_mmf_fee_json(df: pd.DataFrame, json_path: Path) -> int:
         existing_items.append(row)
         n_added += 1
 
-    existing_items.sort(key=lambda x: _norm_text(x.get(_COL_SKU_SITE)))
     payload["items"] = existing_items
     _dump_mmf_fee_json(payload, json_path)
     print(
         f"{Color.YELLOW}[B5] 已写入 {json_path}："
-        f"新增待填 {n_added} 条，合计 {len(existing_items)} 条"
+        f"新增待填 {n_added} 条（已追加到 items 末尾），"
+        f"合计 {len(existing_items)} 条"
         f"（请填写「单个-MF-派送费」后重跑 B5）{Color.RESET}"
     )
     return n_added

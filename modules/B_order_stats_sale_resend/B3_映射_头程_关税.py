@@ -13,6 +13,7 @@ import sys
 import pandas as pd
 from common.style import Color
 from common.sku_mapping import sku_mappings
+from common.split_rows_data_SKU import extract_internal_sku
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import BTH_ALL_SKU_DETAIL_PATH, DESKTOP_ROOT
 
@@ -63,6 +64,16 @@ def _is_us_market(df: pd.DataFrame) -> pd.Series:
 # TODO 文件路径！！！
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-2)订单统计-{shared_date}.xlsx"
 main_file_df = pd.read_excel(main_file_path)
+
+# BTH 匹配前：AMZN.GR.… → 内部编码（兼容 B2 未清洗的旧产出）
+_sku_before = main_file_df["SKU"].astype(str)
+main_file_df["SKU"] = main_file_df["SKU"].map(extract_internal_sku)
+_amzn_n = int((_sku_before.str.lower().str.contains(r"amzn\.gr\.", na=False)).sum())
+if _amzn_n:
+    print(
+        f"{Color.CYAN}[SKU清洗]{Color.RESET} 含 AMZN.GR./amzn.gr. {_amzn_n} 行"
+        f" → 已提取内部产品编码后再匹配 BTH"
+    )
 
 mask = _is_us_market(main_file_df)
 # 拆分
@@ -128,8 +139,8 @@ def _load_bth_sku_set(bth_path: str) -> set[str]:
 
 
 def _sku_lookup_keys(series: pd.Series) -> pd.Series:
-    """与 sku_mappings 一致：去空格，去掉尾缀 -NW 后作为 BTH 查表键。"""
-    s = series.astype(str).str.strip()
+    """与 sku_mappings 一致：先抽 AMZN.GR. 内部码，再去空格/-NW 作为 BTH 查表键。"""
+    s = series.map(extract_internal_sku).astype(str).str.strip()
     return s.str.replace(r'-NW$', '', regex=True)
 
 
@@ -215,7 +226,8 @@ def _abort_if_bth_sku_missing(df: pd.DataFrame, bth_path: str) -> None:
             title=f'{col} — SKU 不在 BTH 表',
             reason=(
                 '订单 SKU 在「BTH全部SKU明细 → 基础数据维护」中不存在'
-                '（查表时会去掉 -NW 后缀再匹配）。与 US/非 US 头程列无关。'
+                '（查表前会提取 AMZN.GR. 内部码，并去掉 -NW 后缀）。'
+                '与 US/非 US 头程列无关。'
             ),
             action=f'在 BTH 表中新增该 SKU，并填写「{bth_field}」等字段后重跑。',
             issue_mask=not_in_bth,

@@ -18,6 +18,27 @@ def strip_hash_suffix(val):
     return str(val).strip().split('#')[0]
 
 
+def extract_internal_sku(s):
+    """从原始 sku 字符串中提取内部产品编码。
+
+    含 ``amzn.gr.`` / ``AMZN.GR.``（不区分大小写）时：取前缀后第一段，再按 ``-`` / ``_`` 截断。
+    例：``AMZN.GR.U56033002-3NTXWVKLD7LRM8RCCY3-LN`` → ``U56033002``
+
+    否则返回去首尾空格后的原字符串；空值原样返回。
+    """
+    if pd.isna(s):
+        return s
+    text = str(s).strip()
+    lower = text.lower()
+    marker = "amzn.gr."
+    if marker in lower:
+        rest = text[lower.index(marker) + len(marker) :]
+        code = rest.split("-")[0].split("_")[0].strip()
+        if code:
+            return code
+    return text
+
+
 def split_one_rows_data(input_df, data_column, value_column, sync_columns=None):
     """
     使用 Pandas 处理 Excel 文件，将指定列中包含 '+' 或 ',' 的数据拆分为多行，

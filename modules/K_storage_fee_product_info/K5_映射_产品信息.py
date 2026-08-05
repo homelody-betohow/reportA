@@ -6,8 +6,11 @@ K5_映射_产品信息 — 订单统计补全产品属性（16→17）
   下游：(已完成-17) → K6 分销收尾 + 无平台仓租分摊
 
 【映射来源】
-  1. 运营模式 / 供应商 ← DB `product_sku`（ops_model / supplier_abbr）
-  2. 二级分类 / 三级分类 / 产品状态 ← 产品信息库2025.xlsx（+ 桌面「信息-映射.xlsx」兜底）
+  1. 运营模式 / 供应商 / 二级分类 / 三级分类 / 产品状态
+     ← DB `product_sku`
+       （ops_model / supplier_abbr / category_lv2 / category_lv3 /
+        amz_lifecycle 或 local_lifecycle）
+  2. 产品状态仍为空 ← 桌面「信息-映射.xlsx」兜底
   3. 业务规则收尾：U88、-NW、智慧谷/易速、分销等
 
 用法：
@@ -43,7 +46,6 @@ PRODUCT_SKU_TABLE = "product_sku"
 _KEY_CHUNK = 500
 _BLANK = frozenset({"", "nan", "None", "NaN", "none"})
 
-PRODUCT_INFO_XLSX = r"\\Betohow\数据报表\数据库\产品信息库2025.xlsx"
 INFO_MAP_XLSX = Path(DESKTOP_ROOT) / "信息-映射.xlsx"
 
 
@@ -66,17 +68,22 @@ def _chunked_in_query(cur, sql_template: str, keys: list[str]) -> list[dict]:
     return results
 
 
-def fetch_ops_and_supplier(sku_keys: list[str]) -> dict[str, tuple[str, str]]:
+def fetch_product_sku_attrs(sku_keys: list[str]) -> dict[str, dict[str, str]]:
     """
-    从 product_sku 批量查运营模式 / 供应商简称。
-    返回 product_sku → (ops_model, supplier_abbr)；空串不当作成有效值。
+    从 product_sku 批量查产品属性。
+    返回 product_sku → {
+      ops_model, supplier_abbr, category_lv2, category_lv3,
+      amz_lifecycle, local_lifecycle
+    }
     """
     sku_keys = sorted({str(x).strip() for x in sku_keys if x and str(x).strip()})
     if not sku_keys:
         return {}
 
     sql = f"""
-        SELECT product_sku, ops_model, supplier_abbr
+        SELECT product_sku, ops_model, supplier_abbr,
+               category_lv2, category_lv3,
+               amz_lifecycle, local_lifecycle
         FROM `{PRODUCT_SKU_TABLE}`
         WHERE product_sku IN ({{placeholders}})
           AND COALESCE(is_deleted, 0) = 0
@@ -90,61 +97,94 @@ def fetch_ops_and_supplier(sku_keys: list[str]) -> dict[str, tuple[str, str]]:
         cur.close()
         conn.close()
 
-    out: dict[str, tuple[str, str]] = {}
+    out: dict[str, dict[str, str]] = {}
     for row in rows:
         sku = str(row.get("product_sku") or "").strip()
         if not sku:
             continue
-        ops = str(row.get("ops_model") or "").strip()
-        supplier = str(row.get("supplier_abbr") or "").strip()
-        out[sku] = (ops, supplier)
+        out[sku] = {
+            "ops_model": str(row.get("ops_model") or "").strip(),
+            "supplier_abbr": str(row.get("supplier_abbr") or "").strip(),
+            "category_lv2": str(row.get("category_lv2") or "").strip(),
+            "category_lv3": str(row.get("category_lv3") or "").strip(),
+            "amz_lifecycle": str(row.get("amz_lifecycle") or "").strip(),
+            "local_lifecycle": str(row.get("local_lifecycle") or "").strip(),
+        }
     return out
 
 
-def apply_ops_and_supplier_from_db(df: pd.DataFrame) -> pd.DataFrame:
-    """按 SKU 写入「运营模式」「供应商」（来自 product_sku）。"""
+def apply_product_info_from_db(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    按 SKU 写入运营模式 / 供应商 / 二级分类 / 三级分类 / 产品状态（来自 product_sku）。
+    产品状态：平台含 AMAZON → amz_lifecycle，否则 → local_lifecycle。
+    """
     if "SKU" not in df.columns:
         raise KeyError("订单统计缺少列「SKU」")
+    if "平台" not in df.columns:
+        raise KeyError("订单统计缺少列「平台」")
 
     out = df.copy()
-    for col in ("运营模式", "供应商"):
+    for col in ("运营模式", "供应商", "二级分类", "三级分类", "产品状态"):
         if col in out.columns:
             out = out.drop(columns=[col])
 
     keys = _norm_sku_key(out["SKU"])
     unique_keys = sorted({k for k in keys.tolist() if k})
-    mapping = fetch_ops_and_supplier(unique_keys)
+    mapping = fetch_product_sku_attrs(unique_keys)
+    is_amazon = out["平台"].astype(str).str.contains("AMAZON", case=False, na=False)
 
     ops_list: list[str | None] = []
     supplier_list: list[str | None] = []
-    hit = 0
-    for k in keys:
-        if k and k in mapping:
-            ops, supplier = mapping[k]
-            ops_list.append(ops or None)
-            supplier_list.append(supplier or None)
-            if ops or supplier:
-                hit += 1
-        else:
+    lv2_list: list[str | None] = []
+    lv3_list: list[str | None] = []
+    status_list: list[str | None] = []
+    hit_ops = 0
+    hit_cat = 0
+    hit_status = 0
+
+    for k, amazon in zip(keys.tolist(), is_amazon.tolist()):
+        attrs = mapping.get(k) if k else None
+        if not attrs:
             ops_list.append(None)
             supplier_list.append(None)
+            lv2_list.append(None)
+            lv3_list.append(None)
+            status_list.append(None)
+            continue
+
+        ops = attrs["ops_model"] or None
+        supplier = attrs["supplier_abbr"] or None
+        lv2 = attrs["category_lv2"] or None
+        lv3 = attrs["category_lv3"] or None
+        status = (attrs["amz_lifecycle"] if amazon else attrs["local_lifecycle"]) or None
+
+        ops_list.append(ops)
+        supplier_list.append(supplier)
+        lv2_list.append(lv2)
+        lv3_list.append(lv3)
+        status_list.append(status)
+
+        if ops or supplier:
+            hit_ops += 1
+        if lv2 or lv3:
+            hit_cat += 1
+        if status:
+            hit_status += 1
 
     sku_pos = out.columns.get_loc("SKU")
     out.insert(sku_pos + 1, "运营模式", ops_list)
     out.insert(sku_pos + 2, "供应商", supplier_list)
+    out.insert(sku_pos + 3, "二级分类", lv2_list)
+    out.insert(sku_pos + 4, "三级分类", lv3_list)
+    out.insert(sku_pos + 5, "产品状态", status_list)
     print(
-        f"[DB] product_sku 映射运营模式/供应商："
-        f"唯一SKU={len(unique_keys)}，命中行={hit}/{len(out)}"
+        f"[DB] product_sku 映射："
+        f"唯一SKU={len(unique_keys)}，"
+        f"运营/供应商命中行={hit_ops}/{len(out)}，"
+        f"分类命中行={hit_cat}/{len(out)}，"
+        f"产品状态命中行={hit_status}/{len(out)}"
     )
     return out
-
-
-def _replace_mapped_col(df: pd.DataFrame, mapped_col: str, target_col: str) -> pd.DataFrame:
-    """把「映射X」落到目标列（先删已有同名列，避免重复列名）。"""
-    out = df.copy()
-    if target_col in out.columns:
-        out = out.drop(columns=[target_col])
-    return out.rename(columns={mapped_col: target_col})
 
 
 # ---------------------------------------------------------------------------
@@ -157,63 +197,10 @@ main_file_path = (
 )
 main_file_df = pd.read_excel(main_file_path)
 
-# 1. 运营模式、供应商 ← product_sku
-main_file_df_2 = apply_ops_and_supplier_from_db(main_file_df)
+# 1. 运营模式、供应商、二级/三级分类、产品状态 ← product_sku
+main_file_df_5 = apply_product_info_from_db(main_file_df)
 
-# 2. 二级分类、三级分类、产品状态 ← 产品信息库2025.xlsx
-product_map_sku_path = PRODUCT_INFO_XLSX
-
-main_file_df_3 = sku_mappings(
-    main_df=main_file_df_2,
-    main_sku="SKU",
-    map_sku_path=product_map_sku_path,
-    map_old_sku="产品编码",
-    map_new_sku="二级分类",
-    map_sku_sheet="产品信息表",
-)
-main_file_df_3 = _replace_mapped_col(main_file_df_3, "映射二级分类", "二级分类")
-
-main_file_df_4 = sku_mappings(
-    main_df=main_file_df_3,
-    main_sku="SKU",
-    map_sku_path=product_map_sku_path,
-    map_old_sku="产品编码",
-    map_new_sku="三级分类",
-    map_sku_sheet="产品信息表",
-)
-main_file_df_4 = _replace_mapped_col(main_file_df_4, "映射三级分类", "三级分类")
-
-# 映射产品状态：平台是否包含 AMAZON
-df_amazon = main_file_df_4[
-    main_file_df_4["平台"].str.contains("AMAZON", case=False, na=False)
-]
-df_not_amazon = main_file_df_4[
-    ~main_file_df_4["平台"].str.contains("AMAZON", case=False, na=False)
-]
-
-df_amazon_1 = sku_mappings(
-    main_df=df_amazon,
-    main_sku="SKU",
-    map_sku_path=product_map_sku_path,
-    map_old_sku="产品编码",
-    map_new_sku="AMZ新老品",
-    map_sku_sheet="产品信息表",
-)
-df_amazon_1 = _replace_mapped_col(df_amazon_1, "映射AMZ新老品", "产品状态")
-
-df_not_amazon_1 = sku_mappings(
-    main_df=df_not_amazon,
-    main_sku="SKU",
-    map_sku_path=product_map_sku_path,
-    map_old_sku="产品编码",
-    map_new_sku="本土平台新老品",
-    map_sku_sheet="产品信息表",
-)
-df_not_amazon_1 = _replace_mapped_col(df_not_amazon_1, "映射本土平台新老品", "产品状态")
-
-main_file_df_5 = pd.concat([df_amazon_1, df_not_amazon_1]).reset_index(drop=True)
-
-# 3. 产品状态为空 → 桌面「信息-映射.xlsx」兜底
+# 2. 产品状态为空 → 桌面「信息-映射.xlsx」兜底
 no_state_mask = main_file_df_5["产品状态"].isna()
 no_state_df = main_file_df_5.loc[no_state_mask].copy()
 if not no_state_df.empty and INFO_MAP_XLSX.is_file():

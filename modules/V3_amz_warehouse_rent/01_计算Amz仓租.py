@@ -2,6 +2,12 @@
 
 数据源：``\\\\Betohow\\数据报表\\报表自动化下载\\仓租下载\\每月\\FBA仓租\\FBA仓租明细{fba_date}.xlsx``
 
+写出到桌面 ``{folder_name}{shared_date}\\仓租\\FBA仓租\\``：
+  - 原始 ``FBA仓租明细{fba_date}.xlsx``（从共享盘复制；
+    「仓储费用（已分摊）」「长期仓储费（已分摊）」表头黄底；
+    停用店 / EXCLUDE_SHOPS 对应行标浅红底）
+  - 处理后 ``(已完成-1)FBA仓租明细{fba_date}.xlsx``（已剔除上述行）
+
 用法::
 
     python modules/V3_amz_warehouse_rent/01_计算Amz仓租.py
@@ -11,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import shutil
 import warnings
 from calendar import monthrange
 from datetime import date, timedelta
@@ -18,6 +25,8 @@ from pathlib import Path
 
 import pandas as pd
 import pymysql.cursors
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 
 # 须在 import config/common 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
 _epr_file = next(
@@ -55,6 +64,11 @@ FBA_RENT_SOURCE_DIR = Path(
 EXCLUDE_SHOPS: list[str] = [
     "yiqianshangmao_DE",
 ]
+
+# 源表样式：剔除行浅红；费用列表头黄色
+_EXCLUDED_ROW_FILL = PatternFill(fill_type="solid", fgColor="FFC7CE")
+_FEE_HEADER_FILL = PatternFill(fill_type="solid", fgColor="FFFF00")
+FEE_COLS = ("仓储费用（已分摊）", "长期仓储费（已分摊）")
 
 _INACTIVE_SHOP_SQL = f"""
     SELECT DISTINCT TRIM(shop_name_en) AS shop_name_en
@@ -243,14 +257,28 @@ def fetch_inactive_shop_names() -> set[str]:
     }
 
 
-def drop_inactive_shops(df: pd.DataFrame, shop_col: str = "店铺") -> pd.DataFrame:
+def resolve_drop_shops() -> tuple[set[str], set[str], set[str]]:
+    """返回 (合并剔除集, shop_status=0 集, EXCLUDE_SHOPS 集)。"""
+    inactive = fetch_inactive_shop_names()
+    exclude = {str(s).strip() for s in EXCLUDE_SHOPS if str(s).strip()}
+    return inactive | exclude, inactive, exclude
+
+
+def drop_inactive_shops(
+    df: pd.DataFrame,
+    shop_col: str = "店铺",
+    *,
+    drop_shops: set[str] | None = None,
+    inactive: set[str] | None = None,
+    exclude: set[str] | None = None,
+) -> pd.DataFrame:
     """删除停用店铺（shop_status=0）及 EXCLUDE_SHOPS 列表中的店铺行。"""
     if shop_col not in df.columns:
         raise KeyError(f"主表缺少列 {shop_col!r}，当前列: {list(df.columns)}")
 
-    inactive = fetch_inactive_shop_names()
-    exclude = {str(s).strip() for s in EXCLUDE_SHOPS if str(s).strip()}
-    drop_shops = inactive | exclude
+    if drop_shops is None or inactive is None or exclude is None:
+        drop_shops, inactive, exclude = resolve_drop_shops()
+
     if not drop_shops:
         print("[过滤] 无停用/排除店铺，跳过")
         return df
@@ -271,10 +299,55 @@ def drop_inactive_shops(df: pd.DataFrame, shop_col: str = "店铺") -> pd.DataFr
         + (f"：{preview}" if preview else "")
         + "）"
     )
-    return df.loc[~mask].copy() 
+    return df.loc[~mask].copy()
 
 
-FEE_COLS = ("仓储费用（已分摊）", "长期仓储费（已分摊）")
+def highlight_excluded_shops_in_excel(
+    path: Path,
+    drop_shops: set[str],
+    *,
+    shop_header: str = "店铺",
+) -> int:
+    """在源表副本中：费用列表头标黄；剔除店铺行标浅红。返回剔除行高亮数。"""
+    if not path.is_file():
+        return 0
+
+    header_row_0 = _detect_header_row(path)
+    header_excel_row = header_row_0 + 1  # openpyxl 1-based
+    wb = load_workbook(path)
+    ws = wb.active
+    headers = [cell.value for cell in ws[header_excel_row]]
+    header_by_name = {
+        str(h).strip(): i
+        for i, h in enumerate(headers, start=1)
+        if h is not None and str(h).strip()
+    }
+
+    for fee_col in FEE_COLS:
+        col_idx = header_by_name.get(fee_col)
+        if col_idx is None:
+            print(f"{Color.YELLOW}[标记] 未找到列表头 {fee_col!r}，跳过黄底{Color.RESET}")
+            continue
+        ws.cell(header_excel_row, col_idx).fill = _FEE_HEADER_FILL
+
+    n = 0
+    if drop_shops:
+        shop_col = header_by_name.get(shop_header)
+        if shop_col is None:
+            raise KeyError(
+                f"源表未找到列 {shop_header!r}，无法高亮剔除行：{path}"
+            )
+        for excel_row in range(header_excel_row + 1, ws.max_row + 1):
+            val = ws.cell(excel_row, shop_col).value
+            shop = "" if val is None else str(val).strip()
+            if shop not in drop_shops:
+                continue
+            for col in range(1, ws.max_column + 1):
+                ws.cell(excel_row, col).fill = _EXCLUDED_ROW_FILL
+            n += 1
+
+    wb.save(path)
+    return n
 
 
 def _shop_key(v) -> str:
@@ -410,12 +483,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"fba_date={fba_label}, snapshot_date={snapshot_date}")
 
     main_file_df = load_fba_excel(fba_label)
+    drop_shops, inactive_shops, exclude_shops = resolve_drop_shops()
 
     # UK 站点费用并入对应 DE（不再删除 UK 费用）
     main_file_df = transfer_uk_fees_to_de(main_file_df)
 
-    # 删除 platform_shop.shop_status=0 的停用店铺行
-    main_file_df = drop_inactive_shops(main_file_df, shop_col="店铺")
+    # 删除 platform_shop.shop_status=0 的停用店铺行 + EXCLUDE_SHOPS
+    main_file_df = drop_inactive_shops(
+        main_file_df,
+        shop_col="店铺",
+        drop_shops=drop_shops,
+        inactive=inactive_shops,
+        exclude=exclude_shops,
+    )
 
     # 使用 sellerSku 列的数据填充 仓库sku 列的空值
     main_file_df["仓库sku"] = main_file_df["仓库sku"].fillna(main_file_df["sellerSku"])
@@ -477,6 +557,24 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(DESKTOP_ROOT) / f"{folder_name}{shared_date}" / "仓租" / "FBA仓租"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    src_path = input_excel_path(fba_label)
+    raw_dest = out_dir / src_path.name
+    shutil.copy2(src_path, raw_dest)
+    print(f"已复制源文件：{raw_dest}")
+    n_hl = highlight_excluded_shops_in_excel(raw_dest, drop_shops)
+    print(
+        "[标记] 源表已标黄费用列表头"
+        f"（{' / '.join(FEE_COLS)}）"
+    )
+    if n_hl:
+        print(
+            f"[标记] 源表已高亮剔除行 {n_hl} 行"
+            f"（停用店 / EXCLUDE_SHOPS，浅红底）"
+        )
+    else:
+        print("[标记] 源表无剔除行需高亮")
+
     output_path = out_dir / f"(已完成-1)FBA仓租明细{fba_label}.xlsx"
     main_file_df_4.to_excel(output_path, index=False)
     print(f"处理完成，文件另存为：{output_path}")

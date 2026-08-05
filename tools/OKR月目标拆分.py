@@ -21,7 +21,7 @@ import sys
 # ========== 配置（按需修改） ==========
 EXCEL_DIR = r"F:\月目标拆解及跟进"
 SOURCE_FILENAME = "2026年目标拆解.xlsx"
-OKR_MONTH = "2026-07"
+OKR_MONTH = "2026-08"
 
 SHEETS_TO_COPY = [
     "AMAZON-EU",

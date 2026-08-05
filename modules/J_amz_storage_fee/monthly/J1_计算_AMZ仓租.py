@@ -26,7 +26,21 @@ print(f"{fba_date}")
 # main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\仓租\FBA仓租\FBA仓租明细{fba_date}.xlsx"
 # FBA仓租 引用的是 SellerSku利润报表， 将 对应日期文件 重命名 即可
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\仓租\FBA仓租\FBA仓租明细{fba_date}.xlsx"
-main_file_df = pd.read_excel(main_file_path)
+
+
+def _detect_header_row(path: str, max_scan: int = 20) -> int:
+    """自动化下载的 FBA 明细前几行常为日期/币种元数据，定位含 sellerSku 的表头行。"""
+    preview = pd.read_excel(path, header=None, nrows=max_scan)
+    for i, row in preview.iterrows():
+        vals = {str(v).strip() for v in row.tolist() if pd.notna(v)}
+        if "sellerSku" in vals:
+            return int(i)
+    raise ValueError(f"未在前 {max_scan} 行找到表头 sellerSku：{path}")
+
+
+_header_row = _detect_header_row(main_file_path)
+main_file_df = pd.read_excel(main_file_path, header=_header_row)
+print(f"[Excel] 读取 {len(main_file_df)} 行（header={_header_row}）")
 
 # 删除 UK站点 的数据行
 main_file_df = main_file_df[main_file_df['站点'] != 'UK']

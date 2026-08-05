@@ -3,10 +3,11 @@ B2 映射站点 / 构建识别码（订单统计第 2 步）
 
 作用概述：
   1. 读取 B1 输出的订单统计表
-  2. 清洗仓库 SKU
-  3. 从 platform_shop 映射「映射站点」「映射平台」（替代原桌面「站点-匹配表.xlsx」）
-  4. LM_BC_FR / LM_RP_FR 按平台 sku 后缀特殊处理
-  5. 生成「SKU-站点识别码」「SKU-平台识别码」
+  2. 删除「订单类型=销售订单 且 仓库SKU销量=0 且 订单总金额=0」的无效行
+  3. 清洗仓库 SKU
+  4. 从 platform_shop 映射「映射站点」「映射平台」（替代原桌面「站点-匹配表.xlsx」）
+  5. LM_BC_FR / LM_RP_FR 按平台 sku 后缀特殊处理
+  6. 生成「SKU-站点识别码」「SKU-平台识别码」
 
 输入：{DESKTOP_ROOT}/{folder_name}{shared_date}/订单统计/(已完成-1-1)订单统计-{shared_date}.xlsx
 输出：同目录 (已完成-2)订单统计-{shared_date}.xlsx
@@ -26,6 +27,7 @@ _epr_mod.bootstrap(__file__)
 
 from common.style import Color
 from common.platform_shop import apply_lm_fr_region_suffix, map_shop_platform_region
+from common.split_rows_data_SKU import extract_internal_sku
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
 
@@ -43,6 +45,17 @@ main_df = pd.read_excel(main_file_path)
 for col in main_df.columns:
     main_df[col] = main_df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
 
+# 删除无效销售订单行：类型=销售订单 且 销量为 0 且 金额为 0
+_qty = pd.to_numeric(main_df['仓库SKU销量'], errors='coerce').fillna(0)
+_amt = pd.to_numeric(main_df['订单总金额'], errors='coerce').fillna(0)
+_drop_mask = (main_df['订单类型'] == '销售订单') & (_qty == 0) & (_amt == 0)
+_dropped = int(_drop_mask.sum())
+if _dropped:
+    main_df = main_df.loc[~_drop_mask].reset_index(drop=True)
+    print(f"{Color.YELLOW}已删除无效销售订单行：{_dropped} 行（订单类型=销售订单 且 仓库SKU销量=0 且 订单总金额=0）{Color.RESET}")
+else:
+    print(f"{Color.GREEN}无无效销售订单行需删除{Color.RESET}")
+
 # 定义例外列表：不去掉尾缀的仓库SKU
 exceptions = ['XPYN2125D-1', 'EXPYN2125D-1', 'EBS8029-1']
 main_df['仓库SKU'] = main_df['仓库SKU'].where(
@@ -55,9 +68,8 @@ main_df['仓库SKU'] = main_df['仓库SKU'].where(
 
 # 重命名
 main_df = main_df.rename(columns={'仓库SKU': '原-仓库SKU'})
-# 匹配 AMZN.GR. 和 _FB 之间的字符
-main_df['仓库SKU'] = main_df['原-仓库SKU'].str.extract(r'AMZN\.GR\.(.*?)_FB')
-main_df['仓库SKU'] = main_df['仓库SKU'].fillna(main_df['原-仓库SKU'])
+# AMZN.GR.U56033002-xxx / amzn.gr.xxx_FB → 内部编码 U56033002
+main_df["仓库SKU"] = main_df["原-仓库SKU"].map(extract_internal_sku)
 
 # ------------------- 映射平台 / 站点（数据源：数据库 platform_shop）-------------------
 main_df = map_shop_platform_region(main_df, shop_col='店铺英文名', site_col='站点')

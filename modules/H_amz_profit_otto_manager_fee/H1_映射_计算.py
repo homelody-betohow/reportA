@@ -26,7 +26,11 @@ _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
 from common.style import Color
-from common.split_rows_data_SKU import split_one_rows_data, strip_hash_suffix
+from common.split_rows_data_SKU import (
+    extract_internal_sku,
+    split_one_rows_data,
+    strip_hash_suffix,
+)
 from common.platform_shop import map_shop_platform_region
 from config.A0_paths import SELLERSKU_PROFIT_FILE_NAME, SELLERSKU_PROFIT_REPORT_DIR
 
@@ -116,19 +120,10 @@ main_file_df_1['仓库sku'] = main_file_df_1['仓库sku'].apply(strip_hash_suffi
 
 
 def extract_values(s):
-    """
-    从原始 sku 字符串中提取内部产品编码。
-
-    规则：
-      - 含 amzn.gr. 前缀（亚马逊泛欧 SKU）：取 amzn.gr. 后第一段，再按 - 和 _ 截断
-      - 其他情况：去掉 BCFBAFL 后缀（# 尾缀已在上方 strip_hash_suffix 处理）
-    """
+    """内部编码（AMZN.GR.）+ 去掉 BCFBAFL 后缀（# 尾缀已在上方 strip_hash_suffix 处理）。"""
     if pd.isna(s):
         return None
-    if 'amzn.gr.' in s:
-        return s.split(r'amzn.gr.')[-1].split('-')[0].split('_')[0]
-    else:
-        return str(s).split('BCFBAFL')[0]
+    return str(extract_internal_sku(s)).split("BCFBAFL")[0]
 
 
 main_file_df_1['仓库sku'] = main_file_df_1['仓库sku'].apply(extract_values)
