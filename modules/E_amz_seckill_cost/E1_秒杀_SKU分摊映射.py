@@ -4,7 +4,8 @@
   - 数据源改为 amz_seckill_cost
   - seckill_fee 含「+」的行忽略（多为「€4.00 per day +0.75% of sales」未结算公式）
   - seckill_fee 可解析且 settle_status≠1 时回填 charge_amount / currency_code，
-    用 updated_at 回填 charge_date；同时 settle_status=1，settle_batch_no=charge_date 月份（yyyy-mm）
+    用 updated_at 回填 charge_date；同时 settle_status=1，settle_batch_no=charge_date 月份（yyyy-mm）；
+    若 seckill_sku 为空则回填 seckill_sku=seckill_goods
   - 已结算（settle_status=1）不再回填
   - 输出 xlsx 使用 settle_status=1 且 settle_batch_no 与报表 end_date 同月的数据
   - SKU 优先 seckill_sku，为空则用 seckill_goods
@@ -88,12 +89,22 @@ def _parse_seckill_fee_detail(val) -> tuple[float, str | None] | None:
     return amount, currency
 
 
+def _is_blank(val) -> bool:
+    """空值 / 空白 / 常见空字符串占位视为 blank。"""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return True
+    s = str(val).strip()
+    return s == "" or s.lower() in ("nan", "none")
+
+
 def fetch_unsettled_for_backfill() -> pd.DataFrame:
     """读取尚未结算（settle_status≠1）的记录，供回填。"""
     sql = f"""
         SELECT
             id,
             seckill_fee,
+            seckill_sku,
+            seckill_goods,
             updated_at,
             settle_status
         FROM `{TABLE}`
@@ -109,7 +120,14 @@ def fetch_unsettled_for_backfill() -> pd.DataFrame:
         cur.close()
         conn.close()
     return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["id", "seckill_fee", "updated_at", "settle_status"]
+        columns=[
+            "id",
+            "seckill_fee",
+            "seckill_sku",
+            "seckill_goods",
+            "updated_at",
+            "settle_status",
+        ]
     )
 
 
@@ -152,6 +170,7 @@ def backfill_charge_from_seckill_fee(df: pd.DataFrame) -> int:
     """seckill_fee 可解析且未结算时回填扣费字段，并标记已结算。
 
     settle_status=1 的行跳过（调用方已过滤；UPDATE 再加条件防并发重复回填）。
+    seckill_sku 为空时同步回填 seckill_sku = seckill_goods。
     """
     if df.empty:
         return 0
@@ -176,7 +195,15 @@ def backfill_charge_from_seckill_fee(df: pd.DataFrame) -> int:
         row_id = row.get("id")
         if row_id is None or (isinstance(row_id, float) and np.isnan(row_id)):
             continue
-        updates.append((amount, currency, charge_date, settle_batch_no, int(row_id)))
+        # seckill_sku 为空时用 seckill_goods；否则保留原值（SQL 用 COALESCE 语义由参数表达）
+        sku = row.get("seckill_sku")
+        goods = row.get("seckill_goods")
+        fill_sku = None if not _is_blank(sku) else (
+            None if _is_blank(goods) else str(goods).strip()
+        )
+        updates.append(
+            (amount, currency, charge_date, settle_batch_no, fill_sku, int(row_id))
+        )
 
     if skipped_no_currency:
         print(f"[DB] seckill_fee 可解析金额但缺币种，跳过回填 {skipped_no_currency} 行")
@@ -190,7 +217,8 @@ def backfill_charge_from_seckill_fee(df: pd.DataFrame) -> int:
             currency_code = %s,
             charge_date = %s,
             settle_status = 1,
-            settle_batch_no = %s
+            settle_batch_no = %s,
+            seckill_sku = COALESCE(%s, seckill_sku)
         WHERE id = %s
           AND settle_status <> 1
     """
