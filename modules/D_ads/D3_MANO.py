@@ -35,26 +35,25 @@ from config.A0_paths import DESKTOP_ROOT
 # CSV 所在「一级子文件夹名」→ 内部统一站点编码
 # 文件夹名来自 ManoMano 后台导出时的店铺/账号目录，与 CSV 文件名无关
 SITE_MAPPING = {
-    "Betohow-DE": "MANO-DE-BTH",
-    "Betohow-FR": "MANO-FR-BTH",
-    "Betohow-IT": "MANO-IT-BTH",
-
-    "B2C RP COMMERCE SARL-FR": "MANO-FR-COM",
-    "B2C OHPA- FR B2C": "MANO-FR-OHPA",
-    "B2C DE - B2C OHPA": "MANO-DE-OHPA",
-    "OHPA- FR": "MANO-FR-OHPA",
-    "OHPA MF-FR": "MANO-FR-OHPAMF",
-    "DE - MMF OHPA": "MANO-DE-OHPAMF",
-    "MMF Betohow MF-FR": "MANO-FR-BTHMF",
-    "MMF Ubeegol MF-FR": "MANO-FR-UBGMF",
-    "MMF DE - MMF OHPA": "MANO-DE-OHPAMF",
-    "MMF FR - MF - OHPA-FR B2B": "MANO-FR-OHPAMF-B2B",
-    "MMF OHPA MF-FR": "MANO-FR-OHPAMF",
-    "COM-B2C DE": "MANO-DE-COM",
-    "COM-B2C IT": "MANO-IT-COM",
-    "COM-B2C FR": "MANO-FR-COM",
-    "COM-MMF DE": "MANO-DE-COMMF",
-    "COM-MMF FR": "MANO-FR-COMMF",
+    # "Betohow-DE": "MANO-DE-BTH",
+    # "Betohow-FR": "MANO-FR-BTH",
+    # "Betohow-IT": "MANO-IT-BTH",
+    # "B2C RP COMMERCE SARL-FR": "MANO-FR-COM",
+    # "B2C OHPA- FR B2C": "MANO-FR-OHPA",
+    # "B2C DE - B2C OHPA": "MANO-DE-OHPA",
+    # "OHPA- FR": "MANO-FR-OHPA",
+    # "OHPA MF-FR": "MANO-FR-OHPAMF",
+    # "DE - MMF OHPA": "MANO-DE-OHPAMF",
+    # "MMF Betohow MF-FR": "MANO-FR-BTHMF",
+    # "MMF Ubeegol MF-FR": "MANO-FR-UBGMF",
+    # "MMF DE - MMF OHPA": "MANO-DE-OHPAMF",
+    # "MMF FR - MF - OHPA-FR B2B": "MANO-FR-OHPAMF-B2B",
+    # "MMF OHPA MF-FR": "MANO-FR-OHPAMF",
+    # "COM-B2C DE": "MANO-DE-COM",
+    # "COM-B2C IT": "MANO-IT-COM",
+    # "COM-B2C FR": "MANO-FR-COM",
+    # "COM-MMF DE": "MANO-DE-COMMF",
+    # "COM-MMF FR": "MANO-FR-COMMF",
 
     # 邮箱前缀形式的文件夹名（新版导出目录结构）
     "onemanofr@outlook.com_FR-B2C OHPA- FR B2C": "MANO-FR-OHPA",
@@ -68,6 +67,13 @@ SITE_MAPPING = {
     "RPCOMMERCE@yeah.net_FR-MMF FR - MF": "MANO-FR-COMMF",
     "RPCOMMERCE@yeah.net_DE-MMF DE - MF": "MANO-DE-COMMF",
     "RPCOMMERCE@yeah.net_FR-MMF FR - MF B2B": "MANO-FR-COMMF-B2B",
+}
+
+# RPCOMMERCE@yeah.net 账号对应站点的广告费需上浮 20%
+RPCOMMERCE_FEE_FACTOR = 1.2
+RPCOMMERCE_SITES = {
+    site for folder, site in SITE_MAPPING.items()
+    if folder.startswith("RPCOMMERCE@yeah.net")
 }
 
 # ManoMano 后台导出列名会随版本变化；统一映射为脚本内部使用的列名
@@ -172,6 +178,12 @@ print(f"合并完成，输出文件: {output_file_path}")
 
 # 步骤 2：过滤无广告花费的行（广告消耗 = 0 表示该 SKU 当期无投放）
 mano_df = mano_df[mano_df['广告消耗'] != 0]
+
+# 步骤 2.1：RPCOMMERCE@yeah.net 对应站点广告费 * 1.2
+_rp_mask = mano_df['站点'].isin(RPCOMMERCE_SITES)
+mano_df.loc[_rp_mask, '广告消耗'] = (
+    pd.to_numeric(mano_df.loc[_rp_mask, '广告消耗'], errors='coerce') * RPCOMMERCE_FEE_FACTOR
+)
 
 product_map_sku_path = fr"{DESKTOP_ROOT}\广告-SKU关系对应.xlsx"
 

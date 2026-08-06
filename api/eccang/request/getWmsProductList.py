@@ -4,9 +4,11 @@
 
 运行（在项目根目录）::
 
-    python -m api.eccang.getWmsProductList
-    python -m api.eccang.getWmsProductList --page 1 --page-size 20
-    python -m api.eccang.getWmsProductList --product-sku YOUR_SKU
+    python api/eccang/request/getWmsProductList.py
+    python api/eccang/request/getWmsProductList.py --page 1 --page-size 20
+    python api/eccang/request/getWmsProductList.py --product-sku YOUR_SKU
+    python api/eccang/request/getWmsProductList.py \\
+        --update-from "2026-08-01 00:00:00" --update-to "2026-08-06 23:59:59"
 """
 
 from __future__ import annotations
@@ -20,7 +22,8 @@ from typing import Any
 
 
 def _bootstrap() -> None:
-    root = Path(__file__).resolve().parents[2]
+    # api/eccang/request/ → 上溯 3 层到项目根
+    root = Path(__file__).resolve().parents[3]
     epr = root / "ensure_project_root.py"
     spec = importlib.util.spec_from_file_location("ensure_project_root", epr)
     mod = importlib.util.module_from_spec(spec)
@@ -99,12 +102,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--update-from",
         dest="product_update_time_from",
-        help="产品更新时间起（YYYY-MM-DD HH:MM:SS）",
+        metavar="DATETIME",
+        help="产品更新时间起（YYYY-MM-DD HH:MM:SS），对应 product_update_time_from",
     )
     parser.add_argument(
         "--update-to",
         dest="product_update_time_to",
-        help="产品更新时间止（YYYY-MM-DD HH:MM:SS）",
+        metavar="DATETIME",
+        help="产品更新时间止（YYYY-MM-DD HH:MM:SS），对应 product_update_time_to",
     )
     args = parser.parse_args(argv)
 
