@@ -7,12 +7,14 @@ C2_ManoRent.py — 合并 MANO MMF 仓租明细并回填站点、SKU、商品ID�
   3. 合并为 ALL-WarehouseRent.xlsx（仅保留 GROSS_AMOUNT_VAT_EXC > 0 的行）
   4. 新增列：站点、SKU、商品ID、商品ID识别码（SELLER_SKU 保留原值）
   5. 标准化 seller_sku（去 EXM 前缀、尾缀等）后，若在 product_sku 命中则直接回填 SKU、商品ID
-  6. 未命中则：product_sku_mapping（manomano / platform）兜底 → product_sku.product_uid
-  7. 商品ID识别码 = 站点 + 商品ID
+  6. AE / OHE 开头未命中时：前缀换成 E 再查 product_sku（AE…/OHE… → E…）
+  7. 仍未命中则：product_sku_mapping（manomano / platform）兜底 → product_sku.product_uid
+  8. 仍未映射的 seller_sku 写入 product_sku_mapping（product_sku 空、is_active=0），提示人工维护
+  9. 商品ID识别码 = 站点 + 商品ID
 """
 
+import hashlib
 import importlib.util
-import sys
 import warnings
 from pathlib import Path
 
@@ -40,8 +42,25 @@ from database.db_connection import get_db_manager  # noqa: E402
 
 PSM_TABLE = "product_sku_mapping"
 PARTNER_CODE_MANO = "manomano"
+PARTNER_TYPE_PLATFORM = "platform"
+PARTNER_NAME_MANO = "ManoMano"
 PRODUCT_SKU_TABLE = "product_sku"
 _KEY_CHUNK = 200
+_SOURCE_TYPE_MAX_LEN = 24
+_SELLER_SKU_MAX_LEN = 128
+DEFAULT_SOURCE_TYPE = "ManoRent"
+
+# product_sku_mapping.line_hash 参与列（与表注释一致）
+_PSM_HASH_FIELDS = (
+    "partner_code",
+    "partner_type",
+    "partner_name",
+    "shop_hash",
+    "seller_sku",
+    "warehouse_sku",
+    "mapping_type",
+    "product_sku",
+)
 
 SITE_COL = "站点"
 SKU_COL = "SKU"
@@ -256,6 +275,180 @@ def _lookup_product_sku_from_mapping(
     return None
 
 
+def _prefix_to_e_sku(sku: str) -> str | None:
+    """
+    特定前缀 → E… 再查 product_sku：
+      AE02012009  → E02012009
+      OHE02012009 → E02012009
+    """
+    s = str(sku or "").strip()
+    upper = s.upper()
+    for prefix in ("OHE", "AE"):
+        if len(s) > len(prefix) and upper.startswith(prefix):
+            return "E" + s[len(prefix) :]
+    return None
+
+
+def _apply_prefix_to_e_lookup(
+    norm_skus: list[str],
+    wh_skus: list[str | None],
+    uids: list[str | None],
+) -> None:
+    """对仍未命中的行：AE/OHE → E 后查 product_sku，命中则回填。"""
+    pending = [
+        i for i in range(len(norm_skus))
+        if wh_skus[i] is None and _prefix_to_e_sku(norm_skus[i])
+    ]
+    if not pending:
+        return
+
+    e_keys = sorted({_prefix_to_e_sku(norm_skus[i]) for i in pending})
+    e_keys = [k for k in e_keys if k]
+    e_map = fetch_product_sku_direct(e_keys)
+    if e_map:
+        print(
+            f"{Color.GREEN}[DB] product_sku AE/OHE→E 命中 {len(e_map)} 个"
+            f"（如 AE…/OHE… → E…）{Color.RESET}"
+        )
+    hit = 0
+    for i in pending:
+        e_sku = _prefix_to_e_sku(norm_skus[i])
+        if e_sku and e_sku in e_map:
+            sku, uid = e_map[e_sku]
+            wh_skus[i] = sku
+            uids[i] = uid
+            hit += 1
+    if hit:
+        print(f"{Color.GREEN}[DB] AE/OHE→E 回填 {hit} 行 SKU + 商品ID{Color.RESET}")
+
+
+def _psm_line_hash(*, seller_sku: str, product_sku: str = "") -> str:
+    """计算 manomano/platform 行的 line_hash。"""
+    record = {
+        "partner_code": PARTNER_CODE_MANO,
+        "partner_type": PARTNER_TYPE_PLATFORM,
+        "partner_name": PARTNER_NAME_MANO,
+        "shop_hash": "",
+        "seller_sku": seller_sku,
+        "warehouse_sku": "",
+        "mapping_type": "single",
+        "product_sku": product_sku,
+    }
+    parts = [str(record.get(k) or "").strip() for k in _PSM_HASH_FIELDS]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def _fetch_existing_mano_seller_skus(seller_skus: list[str]) -> set[str]:
+    """已存在的 manomano/platform 行（含 is_active=0 待更新），避免重复插入。"""
+    seller_skus = sorted({str(x).strip() for x in seller_skus if x and str(x).strip()})
+    if not seller_skus:
+        return set()
+
+    existing: set[str] = set()
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            for i in range(0, len(seller_skus), _KEY_CHUNK):
+                chunk = seller_skus[i : i + _KEY_CHUNK]
+                placeholders = ", ".join(["%s"] * len(chunk))
+                sql = f"""
+                    SELECT DISTINCT seller_sku
+                    FROM `{PSM_TABLE}`
+                    WHERE partner_code = %s
+                      AND partner_type = %s
+                      AND seller_sku IN ({placeholders})
+                """
+                cur.execute(sql, (PARTNER_CODE_MANO, PARTNER_TYPE_PLATFORM, *chunk))
+                for row in cur.fetchall():
+                    sku = str(row.get("seller_sku") or "").strip()
+                    if sku:
+                        existing.add(sku)
+    finally:
+        conn.close()
+    return existing
+
+
+def _insert_pending_mano_mappings(seller_skus: list[str]) -> int:
+    """
+    将未映射的 seller_sku 写入 product_sku_mapping（manomano / platform）。
+
+    待人工维护：product_sku 空串、is_active=0、warehouse_sku 空串。
+    返回新建条数。
+    """
+    skus = sorted({str(x).strip()[:_SELLER_SKU_MAX_LEN] for x in seller_skus if x and str(x).strip()})
+    if not skus:
+        return 0
+
+    source_type = DEFAULT_SOURCE_TYPE[:_SOURCE_TYPE_MAX_LEN]
+    sql = f"""
+        INSERT INTO `{PSM_TABLE}` (
+            line_hash, partner_code, partner_type, partner_name, shop_hash,
+            seller_ean, seller_sku, warehouse_sku, mapping_type, product_sku,
+            component_info, source_type, is_active
+        ) VALUES (
+            %s, %s, %s, %s, '',
+            '', %s, '', 'single', '',
+            NULL, %s, 0
+        )
+    """
+    n_pending = 0
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            for seller_sku in skus:
+                line_hash = _psm_line_hash(seller_sku=seller_sku, product_sku="")
+                try:
+                    cur.execute(
+                        sql,
+                        (
+                            line_hash,
+                            PARTNER_CODE_MANO,
+                            PARTNER_TYPE_PLATFORM,
+                            PARTNER_NAME_MANO,
+                            seller_sku,
+                            source_type,
+                        ),
+                    )
+                    if cur.rowcount:
+                        n_pending += 1
+                except (pymysql.err.IntegrityError, pymysql.err.OperationalError) as exc:
+                    print(
+                        f"{Color.RED}[写入失败] seller_sku={seller_sku!r} → {exc}{Color.RESET}"
+                    )
+                    err = str(exc)
+                    if "chk_psm_mapping_payload" in err:
+                        print(
+                            f"{Color.YELLOW}[提示] 请先执行 "
+                            f"database/alter/alter_product_sku_mapping_allow_empty_product_sku.sql{Color.RESET}"
+                        )
+                    if "chk_psm_sku_by_partner" in err:
+                        print(
+                            f"{Color.YELLOW}[提示] 请先执行 "
+                            f"database/alter/alter_product_sku_mapping_allow_warehouse_seller_sku.sql{Color.RESET}"
+                        )
+        conn.commit()
+    finally:
+        conn.close()
+    return n_pending
+
+
+def _save_unmapped_seller_skus_to_mapping(seller_skus: list[str]) -> tuple[int, int]:
+    """
+    未映射 seller_sku → product_sku_mapping 待填行。
+    返回 (新建条数, 库中已有待维护条数)。
+    """
+    unique = sorted({str(x).strip() for x in seller_skus if x and str(x).strip()})
+    if not unique:
+        return 0, 0
+
+    already = _fetch_existing_mano_seller_skus(unique)
+    to_insert = [s for s in unique if s not in already]
+    n_pending = _insert_pending_mano_mappings(to_insert) if to_insert else 0
+    return n_pending, len(already)
+
+
 def _list_input_files(mano_dir: Path) -> list[Path]:
     files = sorted(mano_dir.glob(FILE_GLOB))
     skip_prefixes = ("(已完成", "(处理完成)")
@@ -300,7 +493,8 @@ def _fill_sku_and_product_uid(df: pd.DataFrame) -> pd.DataFrame:
     """
     回填 SKU、商品ID：
       1. 标准化 seller_sku 后查 product_sku → 直接回填
-      2. 未命中 → product_sku_mapping（manomano）兜底 → product_uid
+      2. AE / OHE 开头未命中 → 前缀换成 E 再查 product_sku
+      3. 仍未命中 → product_sku_mapping（manomano）兜底 → product_uid
     SELLER_SKU 列保留原值。
     """
     seller_col = _find_seller_sku_col(df)
@@ -331,7 +525,10 @@ def _fill_sku_and_product_uid(df: pd.DataFrame) -> pd.DataFrame:
     if direct_hit:
         print(f"{Color.GREEN}[DB] product_sku 直接回填 {direct_hit} 行 SKU + 商品ID{Color.RESET}")
 
-    # ② 未命中行：product_sku_mapping 兜底
+    # ② AE / OHE 开头：前缀 → E 再查 product_sku
+    _apply_prefix_to_e_lookup(norm_skus, wh_skus, uids)
+
+    # ③ 未命中行：product_sku_mapping 兜底
     pending_indices = [i for i in range(row_count) if wh_skus[i] is None and norm_skus[i]]
     if pending_indices:
         mapping_keys = sorted(
@@ -356,7 +553,7 @@ def _fill_sku_and_product_uid(df: pd.DataFrame) -> pd.DataFrame:
         if psm_hit:
             print(f"{Color.CYAN}[DB] product_sku_mapping 补全 {psm_hit} 行 SKU{Color.RESET}")
 
-    # ③ 补商品ID（SKU 已有、商品ID 仍空的行）
+    # ④ 补商品ID（SKU 已有、商品ID 仍空的行）
     need_uid_skus = sorted({wh_skus[i] for i in range(row_count) if wh_skus[i] and not uids[i]})
     if need_uid_skus:
         uid_map = fetch_product_uid_by_warehouse_sku(need_uid_skus)
@@ -438,12 +635,34 @@ def main() -> None:
     missing_wh = merged[seller_col].notna() & merged[SKU_COL].isna()
     missing_uid = merged[SKU_COL].notna() & merged[PRODUCT_UID_COL].isna()
     if missing_wh.any():
+        # 用标准化 seller_sku 作为 mapping 键（与查库逻辑一致）
+        unmapped_norm = (
+            merged.loc[missing_wh, seller_col]
+            .map(_normalize_seller_sku)
+            .loc[lambda s: s.astype(str).str.strip().ne("")]
+            .drop_duplicates()
+            .tolist()
+        )
+        n_new, n_exist = _save_unmapped_seller_skus_to_mapping(unmapped_norm)
         print(
             f"{Color.YELLOW}[检查] {missing_wh.sum()} 行未映射到 SKU"
             f"（标准化 seller_sku 在 product_sku / product_sku_mapping 均无匹配）{Color.RESET}"
         )
         preview = merged.loc[missing_wh, [SITE_COL, seller_col]].drop_duplicates().head(10)
         print(preview.to_string(index=False))
+        print(
+            f"{Color.YELLOW}[待维护] 已写入 `{PSM_TABLE}`："
+            f"新建 {n_new} 条；库中已有 {n_exist} 条"
+            f"（共 {len(unmapped_norm)} 个标准化 seller_sku）{Color.RESET}"
+        )
+        print(
+            f"{Color.CYAN}请人工维护 `{PSM_TABLE}`：\n"
+            f"  - partner_code={PARTNER_CODE_MANO}, partner_type={PARTNER_TYPE_PLATFORM}\n"
+            f"  - 条件示例：WHERE partner_code='{PARTNER_CODE_MANO}' "
+            f"AND partner_type='{PARTNER_TYPE_PLATFORM}' AND is_active=0\n"
+            f"  - 填写正确 product_sku，并设 is_active=1\n"
+            f"  - 完成后重新执行本脚本与 C2_ManoRent合并.py{Color.RESET}"
+        )
     if missing_uid.any():
         print(
             f"{Color.YELLOW}[检查] {missing_uid.sum()} 行未映射到商品ID"
@@ -456,7 +675,12 @@ def main() -> None:
         f"{Color.GREEN}[合并]{Color.RESET} 共 {len(input_files)} 个文件 → {len(merged)} 行"
         f"（剔除 GROSS_AMOUNT_VAT_EXC ≤ 0 共 {total_dropped} 行），已保存：{saved}"
     )
-    print(f"{Color.GREEN}一切正常，请检查未映射行并手动补充（如有）{Color.RESET}")
+    if missing_wh.any():
+        print(
+            f"{Color.YELLOW}存在未映射 SKU，已落库待维护；补全映射后请重跑以回填仓租{Color.RESET}"
+        )
+    else:
+        print(f"{Color.GREEN}一切正常，请检查未映射行并手动补充（如有）{Color.RESET}")
 
 
 if __name__ == "__main__":

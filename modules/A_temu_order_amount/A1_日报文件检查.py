@@ -449,6 +449,19 @@ def _build_rent_check_items(
     ]
 
 
+def _ensure_monthly_rent_dirs(period_dir: Path, *, dry_run: bool) -> list[str]:
+    """月报：在桌面仓租目录下预建 mano / mano-vat（供 V1_mano_monthly 使用）。"""
+    messages: list[str] = []
+    for name in ("mano", "mano-vat"):
+        dest = period_dir / "仓租" / name
+        if dry_run:
+            messages.append(f"[试运行] 将创建目录：{dest}")
+        else:
+            dest.mkdir(parents=True, exist_ok=True)
+            messages.append(f"已确保目录：{dest}")
+    return messages
+
+
 def _build_check_items(roots: SourceRoots, keys: DateKeys) -> list[FileCheckItem]:
     period_dir = Path(REPORT_PERIOD_DIR)
     return (
@@ -597,6 +610,12 @@ def main(argv: list[str] | None = None) -> int:
             f"\n请确认已连接 \\\\Betohow 共享盘。{Color.RESET}"
         )
         return 1
+
+    if roots.is_monthly:
+        print("【仓租目录预建】")
+        for line in _ensure_monthly_rent_dirs(period_dir, dry_run=args.dry_run):
+            print(f"  {Color.GREEN}{line}{Color.RESET}")
+        print()
 
     items = _build_check_items(roots, keys)
     ok_count = 0
