@@ -49,8 +49,6 @@ EU_df_2.loc[EU_df_2['映射销售负责人-SKU（AMAZON-EU）'].notna(), '映射
 EU_df_2 = EU_df_2.drop(columns=['销售负责人'])
 # 重命名
 EU_df_2 = EU_df_2.rename(columns={'映射负责人': '销售负责人'})
-# EU_df_2 销售负责人 为空的，则填入 无负责人
-EU_df_2['销售负责人'] = EU_df_2['销售负责人'].fillna('无负责人')
 
 # 映射 销售负责人  AMAZON-US
 product_map_sku_path = MONTH_GOAL_EXCEL_PATH
@@ -68,11 +66,16 @@ US_df_1 = US_df_1.drop(columns=['销售负责人'])
 US_df_1 = US_df_1.rename(columns={'映射负责人': '销售负责人'})
 # AMAZON-US 的 SKU，以“U” 开头的，销售负责人 是 官雪婷US
 US_df_1.loc[US_df_1['SKU'].str.startswith('U', na=False), '销售负责人'] = '官雪婷US'
-# US_df_1 销售负责人 为空的，则填入 无负责人
-US_df_1['销售负责人'] = US_df_1['销售负责人'].fillna('无负责人')
 
 # 合并数据
 main_file_df_1 = pd.concat([EU_df_2, US_df_1, no_EU_US_df]).reset_index(drop=True)
+
+# 销售负责人为空白或「无负责人」时，统一赋值为 nobody
+_owner = main_file_df_1['销售负责人']
+_blank = _owner.isna() | _owner.astype(str).str.strip().isin(
+    ('', 'nan', 'None', 'NaN', '无负责人')
+)
+main_file_df_1.loc[_blank, '销售负责人'] = 'nobody'
 
 # 保存结果到新的 Excel 文件
 output_path = main_file_path.replace('已完成-21', '已完成-22')

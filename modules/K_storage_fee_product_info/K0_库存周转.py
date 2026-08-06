@@ -11,6 +11,11 @@ K0_库存周转.py — 从 snapshot_market_turnover 反向生成库存动销明�
 
 供 K1/K2 仓租分摊读取（需含列：商品ID、销售平台、SKU、可售库存-可调）。
 
+运营负责人（AMAZON）：口径对齐 M3_映射_销售负责人_AMZ —
+  AMAZON-EU：月目标表按商品ID→负责人，再用「信息-映射」SKU 覆盖；空→nobody
+  AMAZON-US：月目标表按商品ID→负责人；SKU 以 U 开头→官雪婷US；空→nobody
+  其余平台：保留 snapshot_market_turnover.ops_owner（「无负责人」/空 → nobody）
+
 用法：
   python modules/K_storage_fee_product_info/K0_库存周转.py
   python modules/K_storage_fee_product_info/K0_库存周转.py --date 2026.7.18
@@ -41,9 +46,12 @@ _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
-from config.A0_paths import DESKTOP_ROOT  # noqa: E402
+from common.sku_mapping import sku_mappings  # noqa: E402
+from config.A0_paths import DESKTOP_ROOT, MONTH_GOAL_EXCEL_PATH  # noqa: E402
 from config.A0_set_date import folder_name, ku_cun_date, report_date, shared_date  # noqa: E402
 from database.db_connection import get_db_manager  # noqa: E402
+
+_INFO_MAP_XLSX = fr"{DESKTOP_ROOT}\信息-映射.xlsx"
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl.styles.stylesheet")
 
@@ -149,8 +157,8 @@ _PIVOT_AMOUNT_COLS = (
 _PIVOT_SUM_COLS = _PIVOT_QTY_COLS + _PIVOT_AMOUNT_COLS
 _PIVOT_VALUE_COLS = _PIVOT_QTY_COLS  + _PIVOT_AMOUNT_COLS + _PIVOT_TURN_COLS
 _PIVOT_BLANK_LABELS = {
-    "产品状态": "空白",
-    "运营负责人": "无负责人",
+    "产品状态": "--",
+    "运营负责人": "nobody",
 }
 _PIVOT_SECTIONS = (
     ("销售平台", "销售平台"),
@@ -256,6 +264,8 @@ def _fetch_market_turnover(snapshot_date: date) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     df = _attach_legacy_columns(df)
+    df = _fill_blank_product_status(df)
+    df = _map_amz_ops_owner(df)
     df = _coerce_numeric_columns(df)
     return _compute_value_metrics(df)
 
@@ -265,6 +275,82 @@ def _attach_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.rename(columns=_RENAME_COLS).copy()
     if "销售平台" not in out.columns and "销售市场" in out.columns:
         out["销售平台"] = out["销售市场"]
+    return out
+
+
+def _map_amz_ops_owner(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    重写 AMAZON-EU / AMAZON-US 的「运营负责人」，逻辑对齐 M3_映射_销售负责人_AMZ。
+    非 AMZ 行保留库表 ops_owner；中间映射列不落盘。
+    """
+    if df.empty or "销售平台" not in df.columns:
+        return df
+    if "商品ID" not in df.columns or "SKU" not in df.columns:
+        return df
+
+    platform = df["销售平台"]
+    eu_mask = platform.isin(["AMAZON-EU"])
+    us_mask = platform.isin(["AMAZON-US"])
+    other_mask = ~(eu_mask | us_mask)
+    parts: list[pd.DataFrame] = []
+
+    if eu_mask.any():
+        eu = sku_mappings(
+            main_df=df.loc[eu_mask].copy(),
+            main_sku="商品ID",
+            map_sku_path=MONTH_GOAL_EXCEL_PATH,
+            map_old_sku="商品ID",
+            map_new_sku="负责人",
+            map_sku_sheet="AMAZON-EU",
+        )
+        eu = sku_mappings(
+            main_df=eu,
+            main_sku="SKU",
+            map_sku_path=_INFO_MAP_XLSX,
+            map_old_sku="SKU",
+            map_new_sku="销售负责人-SKU（AMAZON-EU）",
+            map_sku_sheet="销售负责人",
+        )
+        override = eu["映射销售负责人-SKU（AMAZON-EU）"].notna()
+        eu.loc[override, "映射负责人"] = eu.loc[override, "映射销售负责人-SKU（AMAZON-EU）"]
+        eu["运营负责人"] = eu["映射负责人"].fillna("nobody")
+        eu = eu.drop(
+            columns=["映射负责人", "映射销售负责人-SKU（AMAZON-EU）"],
+            errors="ignore",
+        )
+        parts.append(eu)
+
+    if us_mask.any():
+        us = sku_mappings(
+            main_df=df.loc[us_mask].copy(),
+            main_sku="商品ID",
+            map_sku_path=MONTH_GOAL_EXCEL_PATH,
+            map_old_sku="商品ID",
+            map_new_sku="负责人",
+            map_sku_sheet="AMAZON-US",
+        )
+        us["运营负责人"] = us["映射负责人"]
+        us.loc[us["SKU"].astype(str).str.startswith("U", na=False), "运营负责人"] = (
+            "官雪婷US"
+        )
+        us["运营负责人"] = us["运营负责人"].fillna("nobody")
+        us = us.drop(columns=["映射负责人"], errors="ignore")
+        parts.append(us)
+
+    if other_mask.any():
+        parts.append(df.loc[other_mask].copy())
+
+    if not parts:
+        return df
+    # 按原索引还原 SQL 排序，再统一 reset
+    out = pd.concat(parts).sort_index().reset_index(drop=True)
+    # 库表/历史口径可能仍是「无负责人」或空，统一为 nobody
+    if "运营负责人" in out.columns:
+        owner = out["运营负责人"]
+        blank = owner.isna() | owner.astype(str).str.strip().isin(
+            ("", "nan", "None", "NaN", "无负责人")
+        )
+        out.loc[blank, "运营负责人"] = "nobody"
     return out
 
 
@@ -415,6 +501,28 @@ def _fill_blank_product_id(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _fill_blank_product_status(df: pd.DataFrame) -> pd.DataFrame:
+    """产品状态为空时赋值为 --。"""
+    out = df.copy()
+    if "产品状态" not in out.columns:
+        return out
+    status = out["产品状态"]
+    blank = status.isna() | status.astype(str).str.strip().isin(
+        ("", "nan", "None", "NaN")
+    )
+    out.loc[blank, "产品状态"] = "--"
+    return out
+
+
+def _first_prefer_status(series: pd.Series) -> str:
+    """分组取产品状态：优先非 --，全空则 --。"""
+    vals = series.astype(str).str.strip()
+    non_blank = vals[~vals.isin(("", "--", "nan", "None", "NaN"))]
+    if not non_blank.empty:
+        return str(non_blank.iloc[0])
+    return "--"
+
+
 def _build_product_turnover(
     sku_df: pd.DataFrame,
     *,
@@ -439,14 +547,14 @@ def _build_product_turnover(
         if key not in src.columns:
             raise KeyError(f"商品级汇总缺少分组列：{key}")
 
-    agg: dict[str, str] = {}
+    agg: dict = {}
     for col in _PRODUCT_FIRST_COLS:
         if (
             col in src.columns
             and col not in group_keys
             and col not in drop_set
         ):
-            agg[col] = "first"
+            agg[col] = _first_prefer_status if col == "产品状态" else "first"
 
     sum_candidates = (
         list(_INT_COLS) + [c for c in _FLOAT_COLS if c not in _PRODUCT_SKIP_SUM]
@@ -485,7 +593,7 @@ def _build_product_turnover(
 
 
 def _normalize_pivot_dim(series: pd.Series, *, blank_label: str) -> pd.Series:
-    """空维度值替换为空白/无负责人等标签。"""
+    """空维度值替换为 --/nobody 等标签。"""
     s = series.astype(object).where(series.notna(), "")
     s = s.map(lambda v: str(v).strip())
     blank = s.isin(("", "nan", "None", "NaN"))
