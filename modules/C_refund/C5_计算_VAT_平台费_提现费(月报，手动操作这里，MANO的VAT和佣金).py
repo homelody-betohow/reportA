@@ -127,6 +127,10 @@ mask = main_file_df_2['平台'].str.contains('AMAZON', case=False, na=False)
 main_file_df_2.loc[mask, '平台费(非AMZ)'] = 0
 main_file_df_2.loc[mask, '销售税(非AMZ)'] = 0
 
+# 若 platform_shop.vat_rate = 0（映射VAT税 = 0），则 销售税(非AMZ) = 0
+mask_vat0 = pd.to_numeric(main_file_df_2['映射VAT税'], errors='coerce') == 0
+main_file_df_2.loc[mask_vat0, '销售税(非AMZ)'] = 0
+
 # 将所有相关列的空值填充为0
 main_file_df_2[['平台费(非AMZ)', '平台费(AMZ)', '销售税(非AMZ)', '销售税(AMZ)']] = main_file_df_2[
     ['平台费(非AMZ)', '平台费(AMZ)', '销售税(非AMZ)', '销售税(AMZ)']].fillna(0)
