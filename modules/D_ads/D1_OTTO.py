@@ -107,7 +107,7 @@ otto_file_df_1.to_csv(output_file_path, index=False)  # index=False表示不保�
 print(f"处理完成，结果已保存到{output_file_path}")
 
 def _fetch_first_sku_by_uid(uids: list[str]) -> dict[str, str]:
-    """product_uid → 第一个 product_sku（按 id 升序，对齐原 Excel keep='first'）。"""
+    """product_uid → 最新 product_sku（按 id 降序，取 id 最大的一条）。"""
     uids = sorted({str(x).strip() for x in uids if x and str(x).strip()})
     if not uids:
         return {}
@@ -127,7 +127,7 @@ def _fetch_first_sku_by_uid(uids: list[str]) -> dict[str, str]:
                       AND is_deleted = 0
                       AND product_sku IS NOT NULL
                       AND TRIM(product_sku) <> ''
-                    ORDER BY id ASC
+                    ORDER BY id DESC
                 """
                 cur.execute(sql, chunk)
                 for row in cur.fetchall():
@@ -142,7 +142,7 @@ def _fetch_first_sku_by_uid(uids: list[str]) -> dict[str, str]:
 
 def map_product_uid_sku_col(main_df: pd.DataFrame, sku_col: str = "SKU") -> pd.DataFrame:
     """
-    OTTO 部分行 SKU 实为商品ID（product_uid）：映射为首个产品编码。
+    OTTO 部分行 SKU 实为商品ID（product_uid）：映射为最新产品编码。
     未命中保留原值；带 -NW 时剥后缀查库再缀回。
     """
     out = main_df.copy()
@@ -155,7 +155,7 @@ def map_product_uid_sku_col(main_df: pd.DataFrame, sku_col: str = "SKU") -> pd.D
     series_no_nw = series.mask(nw_mask, series.str.replace(r"-NW$", "", regex=True))
 
     uid_sku_map = _fetch_first_sku_by_uid(series_no_nw[~invalid].tolist())
-    print(f"[DB] product_sku 命中 {len(uid_sku_map)} 条 product_uid → 首个 product_sku")
+    print(f"[DB] product_sku 命中 {len(uid_sku_map)} 条 product_uid → 最新 product_sku")
 
     mapped = series_no_nw.map(uid_sku_map)
     miss = (~invalid) & mapped.isna()
@@ -184,7 +184,7 @@ def map_product_uid_sku_col(main_df: pd.DataFrame, sku_col: str = "SKU") -> pd.D
 mask = otto_file_df_1['SKU'].str.startswith('25-')
 df_25 = otto_file_df_1.loc[mask].copy()
 df_other = otto_file_df_1.loc[~mask].copy()
-# 商品ID → 主产品编码（product_uid → 首个 product_sku）
+# 商品ID → 主产品编码（product_uid → 最新 product_sku）
 df_25_1 = map_product_uid_sku_col(df_25, sku_col="SKU")
 # --- 合并 ---
 otto_file_df_1 = pd.concat([df_25_1, df_other]).sort_index()

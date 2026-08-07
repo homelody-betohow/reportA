@@ -133,7 +133,7 @@ def _as_decimal(value: Any) -> Decimal:
 
 
 def _fetch_first_sku_by_uid(uids: list[str]) -> dict[str, str]:
-    """product_uid → 第一个 product_sku（按 id 升序，对齐原 Excel keep='first'）。"""
+    """product_uid → 最新 product_sku（按 id 降序，取 id 最大的一条）。"""
     uids = sorted({str(x).strip() for x in uids if x and str(x).strip()})
     if not uids:
         return {}
@@ -153,7 +153,7 @@ def _fetch_first_sku_by_uid(uids: list[str]) -> dict[str, str]:
                       AND is_deleted = 0
                       AND product_sku IS NOT NULL
                       AND TRIM(product_sku) <> ''
-                    ORDER BY id ASC
+                    ORDER BY id DESC
                 """
                 cur.execute(sql, chunk)
                 for row in cur.fetchall():
@@ -183,7 +183,7 @@ def map_product_uid_to_sku(main_df: pd.DataFrame, main_uid: str = "商品ID") ->
     series_no_nw = series.mask(nw_mask, series.str.replace(r"-NW$", "", regex=True))
 
     uid_sku_map = _fetch_first_sku_by_uid(series_no_nw[~invalid].tolist())
-    print(f"[DB] product_sku 命中 {len(uid_sku_map)} 条 product_uid → 首个 product_sku")
+    print(f"[DB] product_sku 命中 {len(uid_sku_map)} 条 product_uid → 最新 product_sku")
 
     mapped = series_no_nw.map(uid_sku_map)
     miss = (~invalid) & mapped.isna()
