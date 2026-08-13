@@ -47,7 +47,8 @@ file_paths = [
     fr'{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\OTTO\(处理完成)OTTO广告.xlsx',
     fr'{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\REAL\(处理完成)REAL广告.xlsx',
     fr'{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\MANO\(处理完成)MANO广告.xlsx',
-    fr'{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\DLZ\(处理完成)DLZ-总的-广告数据.xlsx'
+    fr'{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\DLZ\(处理完成)DLZ-总的-广告数据.xlsx',
+    fr'{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\CD\(处理完成)CD广告.xlsx',
 ]
 merged_df = merge_excel_files(file_paths)
 

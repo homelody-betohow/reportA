@@ -4,6 +4,7 @@
 执行顺序：
   D1 OTTO → D2 REAL → D3 MANO
   → D4_1 shopping 美元合并 → D4_2 创建分摊表 → D4_3 分摊美元 → D4_4 合并欧元
+  → D0 Cdiscount（fee_advertising platform=cdiscount）
   → D5 合并各平台广告 → D6 合并订单统计
 
 前置条件（由其它流程生成，本脚本不检查）：
@@ -48,6 +49,7 @@ _PIPELINE: tuple[str, ...] = (
     "D4_2_DLZ_创建分摊表.py",
     "D4_3_DLZ_分摊_美元.py",
     "D4_4_DLZ_shopping_分摊_合并_欧元.py.py",
+    "D0_Cdiscount.py",
     "D5_合并_儿子-站点识别码_所有平台广告.py",
     "D6_合并_订单统计.py",
 )
