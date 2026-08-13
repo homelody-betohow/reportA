@@ -7,7 +7,8 @@ K6_处理分销_分摊_仓租 — 分销口径收尾 + 无平台仓租分摊（1
 
 【核心处理】
   1. 分销收尾：智慧谷采购成本置 0；分销行运营模式/分类、头程关税派送费
-  2. 将「所有仓库-无平台-需要分摊的费用」总额，按非分销行「平台销售额」占比摊 →「仓租分摊」
+  2. 将「所有仓库-无平台-需要分摊的费用」总额，仅摊给「非分销 且 原-海外仓仓租费>0」
+     的行，按这些行「平台销售额」占比 →「仓租分摊」（不按全场销售额）
   3. 海外仓仓租费 = 原-海外仓仓租费 + 仓租分摊；仓租合计 = FBA仓租费 + 海外仓仓租费
 
 """
@@ -28,6 +29,9 @@ from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
 
 _COL_SALES = "平台销售额"
+_COL_OVERSEAS = "海外仓仓租费"
+_COL_OVERSEAS_ORIG = "原-海外仓仓租费"
+_RENT_EPS = 1e-8
 
 
 def _unallocated_rent_total(df: pd.DataFrame) -> float:
@@ -44,10 +48,17 @@ def _allocate_unplatform_rent(
     """
     无平台仓租按参与行「平台销售额」占比分摊。
     销售额权重：数值化后空值/负数按 0；若合计销售额 ≤ 0，回退为按行均摊（保总额）。
+    无参与行且总额 > 0 时不摊（总额留在第 1 行无平台列，避免摊到无关 SKU）。
     """
     alloc = pd.Series(0.0, index=df.index, dtype=float)
     n = int(participate.sum())
-    if n <= 0 or float(total_cost) == 0.0:
+    if float(total_cost) == 0.0:
+        return alloc
+    if n <= 0:
+        print(
+            f"[无平台分摊] 总额={total_cost:.4f}，参与行=0，"
+            f"无法摊到「原-海外仓仓租费>0」的非分销行（仓租分摊全 0）"
+        )
         return alloc
 
     if _COL_SALES not in df.columns:
@@ -87,8 +98,19 @@ main_file_df.loc[main_file_df['产品状态'] == '分销', ['运营模式', '二
 # 如果产品状态是“分销”，则将“头程”、“关税”、“派送费”替换为 0
 main_file_df.loc[main_file_df['产品状态'] == '分销', ['头程', '关税', '派送费']] = 0
 
-# 分摊-仓租：参与分摊 = 非分销；按「平台销售额」占比
-_participate = main_file_df['产品状态'] != '分销'
+# 先定「原-海外仓仓租费」，再筛参与行（方案 B：只摊给已挂上海外仓仓租的行）
+if _COL_OVERSEAS not in main_file_df.columns:
+    raise KeyError(f"订单统计缺少列「{_COL_OVERSEAS}」，无法按海外仓相关行分摊无平台仓租")
+main_file_df = main_file_df.rename(columns={_COL_OVERSEAS: _COL_OVERSEAS_ORIG})
+main_file_df[_COL_OVERSEAS_ORIG] = round_rent_series(
+    main_file_df[_COL_OVERSEAS_ORIG]
+).fillna(0)
+
+# 参与 = 非分销 且 原-海外仓仓租费>0；权重仍为这些行的平台销售额
+_participate = (main_file_df["产品状态"] != "分销") & (
+    pd.to_numeric(main_file_df[_COL_OVERSEAS_ORIG], errors="coerce").fillna(0)
+    > _RENT_EPS
+)
 # 月报时再排除 MANO-EU（其海外仓仓租已由 ManoRent 统计）
 # if folder_name == '月报':
 #     _mano_eu = main_file_df['平台'].astype(str).str.strip() == 'MANO-EU'
@@ -100,13 +122,8 @@ main_file_df["仓租分摊"] = _allocate_unplatform_rent(
     main_file_df, _participate, total_cost
 )
 main_file_df["仓租分摊"] = round_rent_series(main_file_df["仓租分摊"]).fillna(0)
-# 重命名
-main_file_df = main_file_df.rename(columns={"海外仓仓租费": "原-海外仓仓租费"})
-main_file_df["原-海外仓仓租费"] = round_rent_series(
-    main_file_df["原-海外仓仓租费"]
-).fillna(0)
-main_file_df["海外仓仓租费"] = round_rent_series(
-    main_file_df["原-海外仓仓租费"] + main_file_df["仓租分摊"]
+main_file_df[_COL_OVERSEAS] = round_rent_series(
+    main_file_df[_COL_OVERSEAS_ORIG] + main_file_df["仓租分摊"]
 )
 
 # 产品状态仍为空（含空串/空白）→ 赋 "--"（须在 fillna(0) 之前，且排除该列）
