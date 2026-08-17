@@ -29,6 +29,12 @@ main_df = main_df[main_df['订单销售状态'] != '问题件']
 # 过滤掉 “订单销售状态” 为 “冻结中” 的行
 main_df = main_df[main_df['订单销售状态'] != '冻结中']
 
+# 过滤指定订单，不统计利润
+filter_order_nos = [
+    'WEC0382608170069'
+] 
+main_df = main_df[~main_df['订单号'].isin(filter_order_nos)]
+
 # 替换列名
 main_df.rename(columns={'仓库sku销量': '仓库SKU销量', '仓库sku': '仓库SKU'}, inplace=True)
 # 筛选不等于'semitemu'的行
