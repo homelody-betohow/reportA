@@ -6,9 +6,10 @@ M2_映射_销售负责人_非AMZ — 订单统计补全非 AMZ 销售负责人�
   下游：(已完成-21) → M3 映射 AMZ 销售负责人
 
 【映射规则】
-  1. 站点落在 config.A0_station_sales_owner → 直接用配置负责人
-  2. 其余行 → 用「平台 + 商品ID」匹配 MONTH_GOAL_EXCEL_PATH（ALL sheet）的「负责人」
-  3. 空白 / 「无负责人」 → nobody
+  1. 站点 → platform_shop.ops_owner（优先；LM 的 -ls/-xj 不走剥后缀结果，避免两人合成一人）
+  2. 未命中且站点落在 config.A0_station_sales_owner → 配置负责人
+  3. 其余 → 「平台 + 商品ID」匹配 MONTH_GOAL_EXCEL_PATH（ALL sheet）的「负责人」
+  4. 空白 / 「无负责人」 → nobody
 
 """
 
@@ -38,6 +39,7 @@ from config.A0_station_sales_owner import (  # noqa: E402
     STATION_OWNER_KEYS,
     STATION_SALES_OWNER,
 )
+from common.platform_shop import map_site_to_ops_owner  # noqa: E402
 
 OWNER_COL = "销售负责人"
 NOBODY = "nobody"
@@ -95,6 +97,11 @@ def _apply_goal_owners(df: pd.DataFrame, owner_map: dict[tuple[str, str], str]) 
     return pd.Series([owner_map.get(k) for k in keys], index=df.index, dtype=object)
 
 
+def _filled_mask(series: pd.Series) -> pd.Series:
+    """非空且不是「无负责人」等空白标记。"""
+    return series.notna() & ~series.astype(str).str.strip().isin(_BLANK_OWNERS)
+
+
 def _normalize_owner(df: pd.DataFrame) -> pd.DataFrame:
     """空白或「无负责人」统一为 nobody。"""
     out = df.copy()
@@ -113,20 +120,26 @@ def map_non_amz_owners(
     非 AMZ 销售负责人主流程（对整表订单统计生效，保留原行序）。
 
     步骤：
-      1. 站点在 STATION_OWNER_KEYS → 用 A0_station_sales_owner 配置
-      2. 其余 → 平台+商品ID 查月目标 ALL「负责人」
-      3. 空白/无负责人规范化为 nobody
+      1. 站点 → platform_shop.ops_owner（带 -ls/-xj 的站点不覆盖，仍用 A0）
+      2. 站点在 STATION_OWNER_KEYS 且上一步未命中 → A0_station_sales_owner
+      3. 其余 → 平台+商品ID 查月目标 ALL「负责人」
+      4. 空白/无负责人规范化为 nobody
     """
     out = df.copy()
     if owner_map is None:
         owner_map = _load_goal_owner_map()
 
-    by_station = out["站点"].isin(STATION_OWNER_KEYS)
+    shop_owner = map_site_to_ops_owner(out["站点"])
     station_owner = _apply_station_owners(out)
     goal_owner = _apply_goal_owners(out, owner_map)
 
+    lm_suffix = out["站点"].astype(str).str.endswith(("-ls", "-xj"), na=False)
+    by_station = out["站点"].isin(STATION_OWNER_KEYS)
+    shop_hit = _filled_mask(shop_owner) & ~lm_suffix
+
     out[OWNER_COL] = goal_owner
     out.loc[by_station, OWNER_COL] = station_owner.loc[by_station]
+    out.loc[shop_hit, OWNER_COL] = shop_owner.loc[shop_hit]
 
     return _normalize_owner(out)
 

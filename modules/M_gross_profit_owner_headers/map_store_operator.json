@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "description": "销售经理映射：平台(market_code)+销售负责人(ops_owner) → 销售经理(ops_leader)",
+    "items": [
+        {"market_code": "AMAZON-EU","ops_leader": "官雪婷AMZ","ops_owner": "陈雅琳"},
+        {"market_code": "AMAZON-EU","ops_leader": "陈晓佳AMZ","ops_owner": "李艺萃"},
+        {"market_code": "LM","ops_leader": "陈晓佳LM","ops_owner": "曹乐思"}
+    ]
+}

@@ -5,18 +5,22 @@ K1_3_合并仓租+站点分摊.py — 合并 HY / 4PX「(平台分摊)」并按�
   …\\仓租\\4PX\\(平台分摊)4PX-仓租明细.xlsx
   …\\仓租\\鸿羽\\(平台分摊)HY-仓租明细.xlsx
   …\\订单统计\\(已完成-15)订单统计-{shared_date}.xlsx   # J1 日报 / J3 月报产出
-  DB platform_shop：有负责人 → 平台+ops_owner 允许站点；负责人为空 → 该平台全部启用站点
+  …\\仓租\\{ku_cun_date}库存动销明细.xlsx  Sheet「各平台SKU库存周转明细」销售站点
+  DB platform_shop：仅当该商品该平台在 K0 无销售站点时使用
 
 规则：
   1. 合并两仓 Sheet「平台分摊」：按「商品ID + 销售平台 + 运营负责人」汇总仓租
   2. 销售平台 → 订单统计「平台」（DB market_region→market_code；未命中回填原文）
   3. 站点分摊（平台分摊行全部落到站点，不因站点匹配失败进无平台）：
-       有运营负责人：优先 platform_shop 平台+ops_owner 站点；无匹配则回退该平台全部启用站点
+       严禁 A 的仓租落到 B 的店铺：
+       优先 K0 该商品+平台+负责人的「销售站点」（LM-BTH 覆盖 LM-ES-BTH 等）
+       该平台在 K0 有销售站点时，不再回退到该平台全部店铺
+       无 K0 站点（如 AMAZON）：platform_shop 平台+ops_owner；仍无则该平台全部启用站点
        运营负责人为空 / 平台无白名单：不限站点
        L1 该商品在允许站点内有销量 → 按站点销量占比
        L2 否则按「允许站点」内平台总销量加权
        L4 否则默认主站（PLATFORM_TO_SITE）且主站 ∈ 允许站点（无白名单时不校验）
-       仍未落点 → 强制落到默认主站/平台名/销售平台
+       仍未落点 → 强制落到自己的允许站点 / 默认主站 / 平台名（不挑他人店铺）
   4. 「无平台-仓租费用」= 两仓 (平台分摊) 原无平台合计（不含站点分摊差额）
   5. 写出前去掉「海外仓仓租费」为 0 的行
 
@@ -61,15 +65,21 @@ from common.platform_shop import (  # noqa: E402
 )
 from common.style import Color  # noqa: E402
 from config.A0_paths import DESKTOP_ROOT  # noqa: E402
-from config.A0_set_date import folder_name, shared_date  # noqa: E402
+from config.A0_set_date import folder_name, ku_cun_date, shared_date  # noqa: E402
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl.styles.stylesheet")
 
 SHEET_PLATFORM = "平台分摊"
 SHEET_NO_PLATFORM = "无平台-仓租费用"
 OWNER_COL = "运营负责人"
+KU_CUN_SHEET = "各平台SKU库存周转明细"
+KU_CUN_FILE_SUFFIX = "库存动销明细.xlsx"
+QTY_COL = "可售库存-可调"
+SITE_COL = "销售站点"
 _REMAINDER_EPS = 1e-8
 _INVALID_SITES = frozenset({"", "nan", "None", "无", "其他", "ALL"})
+# 订单站点 LM-{国家}-{店铺} 中的国家段；用于把 K0「LM-BTH」对上「LM-ES-BTH」
+_LM_COUNTRIES = frozenset({"ES", "FR", "IT", "PL", "PT", "DE", "UK", "BE", "NL", "US"})
 
 SOURCE_FILES: tuple[tuple[str, Path], ...] = (
     (
@@ -91,6 +101,11 @@ SOURCE_FILES: tuple[tuple[str, Path], ...] = (
 ORDER_PATH = Path(
     fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计"
     fr"\(已完成-15)订单统计-{shared_date}.xlsx"
+)
+
+K0_PATH = Path(
+    fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\仓租"
+    fr"\{ku_cun_date}{KU_CUN_FILE_SUFFIX}"
 )
 
 OUTPUT_PATH = Path(
@@ -230,15 +245,121 @@ def _default_site_for_platform(platform: str) -> str:
     return site
 
 
+def _lm_shop_key(site: str) -> str:
+    """
+    抽出 LM 店铺键，去掉国家段：
+      LM-ES-BTH → BTH；LM-BTH → BTH；LM-ES-BC-ls → BC-ls；LM-TOTO → TOTO
+    非 LM 站点原样返回。
+    """
+    s = str(site).strip() if site else ""
+    if not s.upper().startswith("LM-"):
+        return s
+    rest = s[3:]
+    parts = rest.split("-", 1)
+    if len(parts) == 2 and parts[0].upper() in _LM_COUNTRIES:
+        return parts[1]
+    return rest
+
+
+def _is_lm_country_site(site: str) -> bool:
+    """是否已是带国家的订单站点（LM-ES-BTH），而非 K0 粗站点（LM-BTH）。"""
+    s = str(site).strip() if site else ""
+    if not s.upper().startswith("LM-"):
+        return False
+    rest = s[3:]
+    parts = rest.split("-", 1)
+    return len(parts) == 2 and parts[0].upper() in _LM_COUNTRIES
+
+
 def _site_allowed(site: str, allowed: frozenset[str]) -> bool:
-    """订单站点是否落在允许集合（兼容 LM -ls/-xj 后缀）。"""
+    """
+    订单站点是否落在允许集合。
+    - 精确匹配；兼容订单站点 -ls/-xj 对上无后缀白名单
+    - K0 粗站点（LM-BTH / LM-BC-ls）覆盖对应国家订单站点
+    - 粗站点无 -ls/-xj 时，覆盖同店铺带后缀站点（LM-RP → LM-ES-RP-ls）
+    带国家的 platform_shop 站点不做跨国家覆盖（LM-ES-BTH 不覆盖 LM-FR-BTH）。
+    """
     s = str(site).strip() if site is not None and not pd.isna(site) else ""
     if not s or s.upper() in _INVALID_SITES:
         return False
     if s in allowed:
         return True
-    base = strip_lm_region_suffix(s)
-    return bool(base) and base in allowed
+    s_base = strip_lm_region_suffix(s)
+    if s_base and s_base in allowed:
+        return True
+    s_key = _lm_shop_key(s)
+    s_key_base = strip_lm_region_suffix(s_key)
+    for raw in allowed:
+        a = str(raw).strip() if raw is not None else ""
+        if not a or a.upper() in _INVALID_SITES:
+            continue
+        if s == a or s_base == a:
+            return True
+        if _is_lm_country_site(a):
+            continue
+        a_key = _lm_shop_key(a)
+        if s_key and a_key and s_key == a_key:
+            return True
+        a_key_base = strip_lm_region_suffix(a_key)
+        if a_key and a_key == a_key_base and s_key_base == a_key_base:
+            return True
+    return False
+
+
+def _load_k0_inv_sites(
+    path: Path,
+) -> tuple[dict[tuple[str, str, str], frozenset[str]], frozenset[str]]:
+    """
+    K0「各平台SKU库存周转明细」→ (商品ID, 平台, 运营负责人) 的销售站点。
+    仅收录可售库存-可调>0 且销售站点非空的行。
+    第二个返回值：K0 里出现过销售站点的平台（这些平台禁止回退到全部店铺）。
+    """
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"未找到 K0 库存动销明细：{path}\n"
+            f"请先运行 modules/K_storage_fee_product_info/K0_库存周转.py"
+        )
+    try:
+        df = pd.read_excel(path, sheet_name=KU_CUN_SHEET)
+    except PermissionError as exc:
+        raise PermissionError(f"文件被占用，请关闭 Excel 后再运行：{path}") from exc
+    except ValueError as exc:
+        raise ValueError(f"{path.name} 缺少 Sheet「{KU_CUN_SHEET}」") from exc
+
+    need = ["商品ID", "销售平台", SITE_COL, QTY_COL]
+    missing = [c for c in need if c not in df.columns]
+    if missing:
+        raise KeyError(f"K0「{KU_CUN_SHEET}」缺少列 {missing}：{path}")
+    if OWNER_COL not in df.columns:
+        df[OWNER_COL] = ""
+
+    out = df[need + [OWNER_COL]].copy()
+    out["商品ID"] = _norm_key(out["商品ID"])
+    out["销售平台"] = _norm_key(out["销售平台"])
+    out[OWNER_COL] = _norm_key(out[OWNER_COL])
+    out[SITE_COL] = _norm_key(out[SITE_COL])
+    out["平台"] = _map_sales_platform_to_platform(out["销售平台"])
+    out[QTY_COL] = pd.to_numeric(out[QTY_COL], errors="coerce").fillna(0)
+
+    plat = _norm_key(out["平台"])
+    valid = (
+        out["商品ID"].ne("")
+        & plat.ne("")
+        & ~plat.str.upper().isin(_INVALID_SITES)
+        & out[SITE_COL].ne("")
+        & ~out[SITE_COL].str.upper().isin(_INVALID_SITES)
+        & (out[QTY_COL] > 0)
+    )
+    sub = out.loc[valid]
+    buckets: dict[tuple[str, str, str], set[str]] = {}
+    plats: set[str] = set()
+    for uid, p, owner, site in zip(
+        sub["商品ID"], plat.loc[sub.index], sub[OWNER_COL], sub[SITE_COL], strict=True
+    ):
+        key = (str(uid), str(p), str(owner))
+        buckets.setdefault(key, set()).add(str(site))
+        plats.add(str(p))
+    return {k: frozenset(v) for k, v in buckets.items()}, frozenset(plats)
 
 
 def _filter_sales_by_allowed_sites(
@@ -344,35 +465,64 @@ def _split_fee_by_weights(
 
 
 def _resolve_allowed_sites(
+    uid: str,
     platform: str,
     owner: str,
+    inv_sites: dict[tuple[str, str, str], frozenset[str]],
+    inv_platforms: frozenset[str],
     owner_sites: dict[tuple[str, str], frozenset[str]],
     plat_sites: dict[str, frozenset[str]],
 ) -> frozenset[str] | None:
     """
-    有负责人 → 优先平台+负责人站点；无匹配则回退该平台全部启用站点。
-    负责人为空 / 平台无店铺白名单 → None（不限制站点）。
-    站点匹配失败不进无平台，由后续阶梯/强制落点消化。
+    允许站点（严禁 A 落到 B 的店）：
+      1. K0 该商品+平台+负责人的销售站点（优先）
+      2. 该平台在 K0 有销售站点：不再回退整平台；可再用 platform_shop 平台+负责人
+      3. 无 K0 站点的平台（如 AMAZON）：platform_shop；无匹配则该平台全部启用站点
+      4. 负责人为空：该平台全部启用站点；平台无白名单 → None（不限制）
     """
     p = str(platform).strip() if platform is not None else ""
     o = str(owner).strip() if owner is not None else ""
+    u = str(uid).strip() if uid is not None else ""
     if not p:
         return None
+    k0 = inv_sites.get((u, p, o), frozenset())
+    if k0:
+        return k0
+    shop = owner_sites.get((p, o), frozenset()) if o else frozenset()
+    if p in inv_platforms:
+        if shop:
+            return shop
+        if o:
+            return frozenset()
+        plat = plat_sites.get(p, frozenset())
+        return plat if plat else None
     if o:
-        sites = owner_sites.get((p, o), frozenset())
-        if sites:
-            return sites
-    sites = plat_sites.get(p, frozenset())
-    return sites if sites else None
+        if shop:
+            return shop
+        plat = plat_sites.get(p, frozenset())
+        return plat if plat else None
+    plat = plat_sites.get(p, frozenset())
+    return plat if plat else None
 
 
 def _force_site_row(row: pd.Series) -> dict:
-    """站点阶梯仍无法落点时的最终兜底（不进无平台）。"""
+    """站点阶梯仍无法落点时的最终兜底（不进无平台；不挑他人店铺）。"""
     plat = str(row.get("平台") or "").strip()
     sales_plat = str(row.get("销售平台") or "").strip()
     if not plat or plat.upper() in _INVALID_SITES:
         plat = sales_plat
-    site = _default_site_for_platform(plat) or plat or sales_plat or "未知"
+    allowed = row.get("_allowed")
+    default = _default_site_for_platform(plat) or plat or sales_plat or "未知"
+    site = default
+    if isinstance(allowed, (set, frozenset)):
+        if allowed:
+            if default and _site_allowed(default, allowed):
+                site = default
+            else:
+                own = sorted(str(s) for s in allowed if str(s).strip())
+                site = own[0] if own else (plat or sales_plat or "未知")
+        else:
+            site = plat or sales_plat or "未知"
     return {
         "SKU": row.get("SKU", ""),
         "商品ID": row.get("商品ID", ""),
@@ -387,6 +537,8 @@ def _allocate_fee_by_site(
     rent_df: pd.DataFrame,
     sku_site_sales: pd.DataFrame,
     plat_site_sales: pd.DataFrame,
+    inv_sites: dict[tuple[str, str, str], frozenset[str]],
+    inv_platforms: frozenset[str],
     owner_sites: dict[tuple[str, str], frozenset[str]],
     plat_sites: dict[str, frozenset[str]],
 ) -> tuple[pd.DataFrame, float]:
@@ -434,8 +586,10 @@ def _allocate_fee_by_site(
         return empty_site, 0.0
 
     rent_g["_allowed"] = [
-        _resolve_allowed_sites(p, o, owner_sites, plat_sites)
-        for p, o in zip(rent_g["平台"], rent_g[OWNER_COL], strict=True)
+        _resolve_allowed_sites(
+            uid, p, o, inv_sites, inv_platforms, owner_sites, plat_sites
+        )
+        for uid, p, o in zip(rent_g["商品ID"], rent_g["平台"], rent_g[OWNER_COL], strict=True)
     ]
 
     # —— L1：商品ID+平台，且站点 ∈ 允许站点 ——
@@ -566,9 +720,14 @@ def main() -> int:
 
     owner_sites = fetch_owner_platform_sites()
     plat_sites = fetch_platform_sites()
+    inv_sites, inv_platforms = _load_k0_inv_sites(K0_PATH)
     print(
         f"[读取] platform_shop 平台×负责人站点组={len(owner_sites)} 组，"
         f"平台站点组={len(plat_sites)} 组"
+    )
+    print(
+        f"[读取] K0 销售站点 {len(inv_sites)} 组（商品ID+平台+负责人），"
+        f"有销售站点的平台={sorted(inv_platforms)} ← {K0_PATH}"
     )
 
     sku_site_sales, plat_site_sales = _load_order_dims(ORDER_PATH)
@@ -598,7 +757,13 @@ def main() -> int:
 
     rent_before = float(round_rent(by_sales_plat["海外仓仓租费"].sum()))
     site_df, forced_site_total = _allocate_fee_by_site(
-        by_sales_plat, sku_site_sales, plat_site_sales, owner_sites, plat_sites
+        by_sales_plat,
+        sku_site_sales,
+        plat_site_sales,
+        inv_sites,
+        inv_platforms,
+        owner_sites,
+        plat_sites,
     )
 
     # 无平台仅等于两仓 (平台分摊) 原无平台合计，站点匹配失败不并入

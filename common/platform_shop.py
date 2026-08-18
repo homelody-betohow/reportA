@@ -4,6 +4,8 @@ platform_shop 统一映射：
 1) 店铺 → 站点 / 平台（替代原桌面「站点-匹配表.xlsx」）
 2) 站点 → 平台（market_region → market_code）
 3) 站点 → VAT / 平台佣金（DB 优先，桌面「VAT、平台费-映射.xlsx」兜底）
+4) 站点 → 运营经理 ops_leader（销售经理优先匹配）
+5) 站点 → 运营负责人 ops_owner（销售负责人优先匹配）
 
 字段对应（Excel → DB）：
   站点 → market_region
@@ -69,6 +71,30 @@ _PLATFORM_SHOP_RENT_SQL = """
     FROM platform_shop
     WHERE shop_status = 1
       AND TRIM(market_region) <> ''
+"""
+
+# 销售经理：销售站点(market_region) → 运营经理(ops_leader)
+_PLATFORM_SHOP_LEADER_SQL = """
+    SELECT
+        TRIM(market_region) AS market_region,
+        TRIM(ops_leader) AS ops_leader
+    FROM platform_shop
+    WHERE shop_status = 1
+      AND TRIM(market_region) <> ''
+      AND TRIM(ops_leader) <> ''
+    ORDER BY id ASC
+"""
+
+# 销售负责人：销售站点(market_region) → 运营负责人(ops_owner)
+_PLATFORM_SHOP_OWNER_SQL = """
+    SELECT
+        TRIM(market_region) AS market_region,
+        TRIM(ops_owner) AS ops_owner
+    FROM platform_shop
+    WHERE shop_status = 1
+      AND TRIM(market_region) <> ''
+      AND TRIM(ops_owner) <> ''
+    ORDER BY id ASC
 """
 
 # 仓租站点分摊：平台(market_code) + 运营负责人 → 允许站点(market_region)
@@ -239,6 +265,94 @@ def map_site_to_rent_region(
         return float("nan")
 
     return sites.map(_resolve)
+
+
+def _map_site_to_region_value(
+    sites: pd.Series,
+    mapping: dict[str, str],
+) -> pd.Series:
+    """订单「站点」查 platform_shop：先剥 LM 的 -ls/-xj，再试原值。"""
+
+    def _resolve(site: object) -> str | float:
+        text = str(site or "").strip()
+        if not text or text.lower() == "nan":
+            return float("nan")
+        stripped = strip_lm_region_suffix(text)
+        if stripped in mapping:
+            return mapping[stripped]
+        if text in mapping:
+            return mapping[text]
+        return float("nan")
+
+    return sites.map(_resolve)
+
+
+def fetch_ops_leader_by_region() -> dict[str, str]:
+    """启用店铺：market_region → ops_leader。同站点多行保留首次非空。"""
+    db = get_db_manager()
+    conn = db.get_connection()
+    cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cur.execute(_PLATFORM_SHOP_LEADER_SQL)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    mapping: dict[str, str] = {}
+    for row in rows:
+        region = str(row.get("market_region") or "").strip()
+        leader = str(row.get("ops_leader") or "").strip()
+        if region and leader and region not in mapping:
+            mapping[region] = leader
+    return mapping
+
+
+def map_site_to_ops_leader(
+    sites: pd.Series,
+    leaders: dict[str, str] | None = None,
+) -> pd.Series:
+    """
+    订单「站点」→ platform_shop.ops_leader（销售经理）。
+
+    优先去掉 LM 的 -ls / -xj 后缀再匹配；未命中则尝试原值精确匹配。
+    """
+    mapping = leaders if leaders is not None else fetch_ops_leader_by_region()
+    return _map_site_to_region_value(sites, mapping)
+
+
+def fetch_ops_owner_by_region() -> dict[str, str]:
+    """启用店铺：market_region → ops_owner。同站点多行保留首次非空。"""
+    db = get_db_manager()
+    conn = db.get_connection()
+    cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cur.execute(_PLATFORM_SHOP_OWNER_SQL)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    mapping: dict[str, str] = {}
+    for row in rows:
+        region = str(row.get("market_region") or "").strip()
+        owner = str(row.get("ops_owner") or "").strip()
+        if region and owner and region not in mapping:
+            mapping[region] = owner
+    return mapping
+
+
+def map_site_to_ops_owner(
+    sites: pd.Series,
+    owners: dict[str, str] | None = None,
+) -> pd.Series:
+    """
+    订单「站点」→ platform_shop.ops_owner（销售负责人）。
+
+    优先去掉 LM 的 -ls / -xj 后缀再匹配；未命中则尝试原值精确匹配。
+    """
+    mapping = owners if owners is not None else fetch_ops_owner_by_region()
+    return _map_site_to_region_value(sites, mapping)
 
 
 def fetch_platform_shop_rows() -> list[dict]:

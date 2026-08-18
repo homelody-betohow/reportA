@@ -42,6 +42,7 @@ setup_console_encoding()
 
 # D4 子步骤必须按依赖顺序；D4_4 文件名在仓库中为双后缀 .py.py
 _PIPELINE: tuple[str, ...] = (
+    "D0_Cdiscount.py",
     "D1_OTTO.py",
     "D2_REAL.py",
     "D3_MANO.py",

@@ -1,0 +1,33 @@
+{
+    "version": 1,
+    "description": "日报平台（报表）映射：站点(market_region) → 平台（报表）。未命中保留原站点。",
+    "items": [
+        {"market_region": "AMAZON-BE", "report_platform": "AMAZON-EU"},
+        {"market_region": "AMAZON-DE", "report_platform": "AMAZON-EU"},
+        {"market_region": "AMAZON-ES", "report_platform": "AMAZON-EU"},
+        {"market_region": "AMAZON-FR", "report_platform": "AMAZON-EU"},
+        {"market_region": "AMAZON-IT", "report_platform": "AMAZON-EU"},
+        {"market_region": "AMAZON-US", "report_platform": "AMAZON-US"},
+        {"market_region": "LM-ES-BTH", "report_platform": "LM-BTH"},
+        {"market_region": "LM-FR-BTH", "report_platform": "LM-BTH"},
+        {"market_region": "LM-IT-BTH", "report_platform": "LM-BTH"},
+        {"market_region": "LM-TOTO", "report_platform": "LM-TOTO"},
+        {"market_region": "TEMU-AIH", "report_platform": "TEMU-AIH"},
+        {"market_region": "TEMU-BV", "report_platform": "TEMU-BV"},
+        {"market_region": "TEMU-HM", "report_platform": "TEMU-HM"},
+        {"market_region": "TEMU-AL", "report_platform": "TEMU-AL"},
+        {"market_region": "DLZ-DE", "report_platform": "DLZ-EU"},
+        {"market_region": "DLZ-ES", "report_platform": "DLZ-EU"},
+        {"market_region": "DLZ-FR", "report_platform": "DLZ-EU"},
+        {"market_region": "MANO-DE-OHPA", "report_platform": "MANO-EU"},
+        {"market_region": "MANO-DE-OHPAMF", "report_platform": "MANO-EU"},
+        {"market_region": "MANO-FR-BTHMF", "report_platform": "MANO-EU"},
+        {"market_region": "MANO-FR-OHPA", "report_platform": "MANO-EU"},
+        {"market_region": "MANO-FR-OHPAMF-B2B", "report_platform": "MANO-EU"},
+        {"market_region": "MANO-FR-OHPAMF", "report_platform": "MANO-EU"},
+        {"market_region": "OTTO-BTH", "report_platform": "OTTO"},
+        {"market_region": "REAL-BTH", "report_platform": "REAL"},
+        {"market_region": "REAL-CZ-FB", "report_platform": "REAL"},
+        {"market_region": "REAL-DE-FB", "report_platform": "REAL"}
+    ]
+}
