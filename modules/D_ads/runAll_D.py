@@ -50,7 +50,6 @@ _PIPELINE: tuple[str, ...] = (
     "D4_2_DLZ_创建分摊表.py",
     "D4_3_DLZ_分摊_美元.py",
     "D4_4_DLZ_shopping_分摊_合并_欧元.py.py",
-    "D0_Cdiscount.py",
     "D5_合并_儿子-站点识别码_所有平台广告.py",
     "D6_合并_订单统计.py",
 )

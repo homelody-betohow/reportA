@@ -158,9 +158,11 @@ if folder_name == '日报':
     # 删除 指定列   日报 不要 '订单采购成本', '重发采购成本', '二次上架采购成本'
     main_df_1.drop(columns=['订单采购成本', '重发采购成本', '二次上架采购成本'], inplace=True)
     # 平台（报表）：map_report_platform.json 站点 → 报表平台；未命中保留原站点
+    # 插在「站点」右侧，与原先 sku_mappings 插入位置一致
     _sites = main_df_1["站点"].astype(str).str.strip()
     _report_plat = _sites.map(_load_report_platform_map())
-    main_df_1["平台（报表）"] = _report_plat.where(_report_plat.notna(), _sites)
+    _report_plat = _report_plat.where(_report_plat.notna(), _sites)
+    main_df_1.insert(main_df_1.columns.get_loc("站点") + 1, "平台（报表）", _report_plat)
     main_df_1 = main_df_1.rename(columns={"仓租识别码": "平台（报表识别码）"})
     main_df_1["平台（报表识别码）"] = main_df_1["平台（报表）"] + main_df_1["商品ID"].astype(str)
 
