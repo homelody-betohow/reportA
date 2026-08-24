@@ -1,192 +1,412 @@
-import os
+"""
+D2_REAL.py — REAL 广告 CSV → (处理完成)REAL广告.xlsx
+
+流程：
+  1. 读桌面 REAL 各站点 csv（按文件名识别站点），合并；CZ 单独读并换汇
+  2. 清洗 Cost (€)，去掉 0 花费
+  3. EAN → product_sku_mapping(real/platform).seller_sku 换仓库 SKU
+     （命中写入 SKU；未命中 SKU 留空并黄字列 EAN）
+     bundle：按 component_info 的 qty 重复拼成 A,B,B…，再经 split_one_rows_data 按份数分摊
+  4. 组合 SKU（+ / ,）拆行均摊广告费
+  5. 生成 SKU-站点识别码 / SKU-平台识别码，写出处理完成 Excel
+
+用法：
+  python modules/D_ads/D2_REAL.py
+"""
+from __future__ import annotations
+
 import glob
-import pandas as pd
 import importlib.util
+import json
+import os
 from pathlib import Path
-# 须在 import config/common 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
-_epr_file = next(p / "ensure_project_root.py" for p in Path(__file__).resolve().parents if (p / "ensure_project_root.py").is_file())
+from typing import Any, Iterable
+
+import pandas as pd
+import pymysql.cursors
+
+# 须在 import config/common 之前：加载项目根到 sys.path
+_epr_file = next(
+    p / "ensure_project_root.py"
+    for p in Path(__file__).resolve().parents
+    if (p / "ensure_project_root.py").is_file()
+)
 _spec = importlib.util.spec_from_file_location("ensure_project_root", _epr_file)
 _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
-from common.sku_mapping import sku_mappings
 from common.platform_shop import map_region_to_platform
-from config.A0_set_date import shared_date, folder_name, kc_to_EUR
 from common.split_rows_data_SKU import split_one_rows_data
+from common.style import Color
 from config.A0_paths import DESKTOP_ROOT
+from config.A0_set_date import folder_name, kc_to_EUR, shared_date
+from database.db_connection import get_db_manager
+
+PSM_TABLE = "product_sku_mapping"
+PARTNER_CODE_REAL = "real"
+_KEY_CHUNK = 200
+
+_SITE_MARKERS = (
+    ("REAL-DE-FB", "REAL-DE-FB"),
+    ("REAL-IT-FB", "REAL-IT-FB"),
+    ("REAL-CZ-FB", "REAL-CZ-FB"),
+    ("REAL-BTH", "REAL-BTH"),
+)
 
 
-def _read_csv_lines(file_path):
+# ---------------------------------------------------------------------------
+# 小工具
+# ---------------------------------------------------------------------------
+
+
+def _as_text(val: Any) -> str:
+    if pd.isna(val):
+        return ""
+    # EAN 常被读成 int/float，避免 1.23e11
+    if isinstance(val, float) and val == int(val):
+        val = int(val)
+    text = str(val).strip()
+    return "" if text.lower() in ("nan", "none") else text
+
+
+def _unique_keys(values: Iterable[Any]) -> list[str]:
+    return sorted({_as_text(v) for v in values if _as_text(v)})
+
+
+def _sibling(src: str | Path, name: str) -> Path:
+    return Path(src).parent / name
+
+
+def _db_dict_chunks(
+    keys: list[str], sql_template: str, params_prefix: tuple = ()
+) -> list[dict]:
+    if not keys:
+        return []
+    rows: list[dict] = []
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            for i in range(0, len(keys), _KEY_CHUNK):
+                chunk = keys[i : i + _KEY_CHUNK]
+                placeholders = ", ".join(["%s"] * len(chunk))
+                cur.execute(
+                    sql_template.format(placeholders=placeholders),
+                    (*params_prefix, *chunk),
+                )
+                rows.extend(cur.fetchall())
+    finally:
+        conn.close()
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# CSV 读取 / CZ 花费列
+# ---------------------------------------------------------------------------
+
+
+def _read_csv_lines(file_path: str | Path) -> list[str]:
     """按常见编码读取 REAL 导出 csv，避免 Kč 等表头因编码错误变成乱码。"""
     raw = Path(file_path).read_bytes()
     fallback = None
-    for encoding in ('utf-8-sig', 'utf-8', 'cp1250', 'cp1252', 'latin-1'):
+    for encoding in ("utf-8-sig", "utf-8", "cp1250", "cp1252", "latin-1"):
         try:
             text = raw.decode(encoding)
         except UnicodeDecodeError:
             continue
         lines = text.splitlines()
-        if lines and 'Cost' in lines[0]:
+        if lines and "Cost" in lines[0]:
             return lines
         if fallback is None:
             fallback = lines
     return fallback or []
 
 
-def csv_to_df(file_path):
-    # 同样的文件，编码要一致，不然不能正确合并
+def _site_from_filename(file_name: str) -> str:
+    for marker, site in _SITE_MARKERS:
+        if marker in file_name:
+            return site
+    return ""
+
+
+def csv_to_df(file_path: str | Path) -> pd.DataFrame:
     lines = _read_csv_lines(file_path)
     new_data = []
     for line in lines:
-        cells = line.strip().split(';')
+        cells = line.strip().split(";")
         new_row = []
         for cell in cells:
-            cell = cell.strip().replace('"', '').replace('\ufeff', '').replace(',', '.')
+            cell = cell.strip().replace('"', "").replace("\ufeff", "").replace(",", ".")
             try:
                 new_row.append(int(cell))
             except ValueError:
                 new_row.append(cell)
         new_data.append(new_row)
 
-    site = ''
-    file_name = os.path.basename(file_path)
-    if 'REAL-DE-FB' in file_name:
-        site = 'REAL-DE-FB'
-    elif 'REAL-IT-FB' in file_name:
-        site = 'REAL-IT-FB'
-    elif 'REAL-CZ-FB' in file_name:
-        site = 'REAL-CZ-FB'
-    elif 'REAL-BTH' in file_name:
-        site = 'REAL-BTH'
+    if not new_data:
+        raise ValueError(f"REAL CSV 无数据：{file_path}")
 
-    real_file_df = pd.DataFrame(new_data[1:], columns=new_data[0])
-    if site:
-        real_file_df['站点'] = site
-    else:
-        print(f'无法获取到对应的站点，请检查文件名，程序终止！！！')
-        exit()
-    return real_file_df
+    site = _site_from_filename(os.path.basename(str(file_path)))
+    if not site:
+        raise SystemExit(f"无法获取到对应的站点，请检查文件名，程序终止！！！ path={file_path}")
+
+    df = pd.DataFrame(new_data[1:], columns=new_data[0])
+    df["站点"] = site
+    return df
 
 
-def _find_cz_cost_col(columns):
+def _find_cz_cost_col(columns) -> tuple[str | None, str | None]:
     """定位 CZ 花费列：优先 Cost (Kč)，兼容编码差异或已是欧元的表头。"""
     cols = list(columns)
-    if 'Cost (Kč)' in cols:
-        return 'Cost (Kč)', 'kc'
-    if 'Cost (€)' in cols:
-        return 'Cost (€)', 'eur'
+    if "Cost (Kč)" in cols:
+        return "Cost (Kč)", "kc"
+    if "Cost (€)" in cols:
+        return "Cost (€)", "eur"
     for col in cols:
         col_str = str(col)
         lower = col_str.lower()
-        if 'cost' in lower and ('kč' in lower or 'kc' in lower or 'czk' in lower):
-            return col, 'kc'
-        if 'cost' in lower and '€' in col_str:
-            return col, 'eur'
-    # 编码乱码时：仍按 Cost (...) 识别；含 euro/eur 视为欧元，否则按克朗换算
+        if "cost" in lower and ("kč" in lower or "kc" in lower or "czk" in lower):
+            return col, "kc"
+        if "cost" in lower and "€" in col_str:
+            return col, "eur"
     for col in cols:
         col_str = str(col)
-        if col_str.startswith('Cost (') and col_str.endswith(')'):
+        if col_str.startswith("Cost (") and col_str.endswith(")"):
             inner = col_str[6:-1].lower()
-            if 'eur' in inner or '€' in col_str:
-                return col, 'eur'
-            return col, 'kc'
+            if "eur" in inner or "€" in col_str:
+                return col, "eur"
+            return col, "kc"
     return None, None
 
 
-# TODO 文件夹路径！！！
-real_folder_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\REAL"
-# 获取文件夹中的所有的  当前日期.csv 文件
-real_file_paths = glob.glob(os.path.join(real_folder_path, f'*{shared_date}.csv'))
-# 过滤掉以 REAL-CZ-FB 开头的文件
-real_file_paths = [f for f in real_file_paths if not os.path.basename(f).startswith('REAL-CZ-FB')]
-print(real_file_paths)
-if not real_file_paths:
-    raise FileNotFoundError(f'未找到 REAL 广告 csv：{real_folder_path}\\*{shared_date}.csv')
-# 读取并处理每个文件               合并 DataFrame
-all_real_df_no_cz = pd.concat([csv_to_df(real_file_path) for real_file_path in real_file_paths], ignore_index=True)
+# ---------------------------------------------------------------------------
+# product_sku_mapping
+# ---------------------------------------------------------------------------
 
-# TODO 文件路径！！！
-# DE、IT的广告花费是：欧元，CZ的广告花费是：捷克克朗（先转成RMB，再 / 7.3 转 欧元）；PL没有广告投入
-# TODO 每月1号，手动更新 捷克克朗 转 RMB 的汇率！！！
-real_cz_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\广告\REAL\REAL-CZ-FB-广告数据-{shared_date}.csv"
-if os.path.isfile(real_cz_path):
-    real_cz_df = csv_to_df(real_cz_path)
-    cz_cost_col, cz_currency = _find_cz_cost_col(real_cz_df.columns)
-    if cz_cost_col is None:
-        raise KeyError(
-            f"REAL-CZ-FB 未找到花费列（期望 Cost (Kč) 或 Cost (€)），实际列名：{real_cz_df.columns.tolist()}"
+
+def _parse_component_info(component_info: Any) -> list:
+    """兼容 [{...}] 与 {"items": [{...}]}。"""
+    if component_info is None or component_info == "":
+        return []
+    data = component_info
+    if isinstance(data, (bytes, bytearray)):
+        data = data.decode("utf-8")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(data, dict):
+        items = data.get("items")
+        return items if isinstance(items, list) else []
+    return data if isinstance(data, list) else []
+
+
+def _component_qty(item: dict) -> int:
+    raw = item.get("qty", 1)
+    if raw is None or raw == "":
+        return 1
+    try:
+        qty = int(float(raw))
+    except (TypeError, ValueError):
+        return 1
+    return max(qty, 0)
+
+
+def _component_skus_by_qty(component_info: Any) -> list[str]:
+    """
+    bundle 按 qty 展开：[{A,1},{B,2}] → [A,B,B]
+    后续 split_one_rows_data 按份数均摊 = 按数量分摊。
+    """
+    parts: list[str] = []
+    for item in _parse_component_info(component_info):
+        if isinstance(item, dict):
+            sku = _as_text(item.get("product_sku"))
+            if not sku:
+                continue
+            qty = _component_qty(item)
+            if qty <= 0:
+                continue
+            parts.extend([sku] * qty)
+        elif isinstance(item, str) and item.strip():
+            parts.append(item.strip())
+    return parts
+
+
+def _warehouse_sku_from_row(row: dict) -> str:
+    mapping_type = _as_text(row.get("mapping_type")).lower()
+    if mapping_type == "bundle":
+        return ",".join(_component_skus_by_qty(row.get("component_info")))
+    return _as_text(row.get("product_sku"))
+
+
+def fetch_real_ean_rows(eans: list[Any]) -> list[dict]:
+    """拉取 real/platform 下相关 EAN 的映射行（updated_at 降序）。"""
+    keys = _unique_keys(eans)
+    sql = f"""
+        SELECT seller_sku, market_region, product_sku, mapping_type, component_info, updated_at
+        FROM `{PSM_TABLE}`
+        WHERE partner_code = %s
+          AND partner_type = 'platform'
+          AND is_active = 1
+          AND seller_sku IN ({{placeholders}})
+        ORDER BY updated_at DESC
+    """
+    return _db_dict_chunks(keys, sql, (PARTNER_CODE_REAL,))
+
+
+def resolve_ean_sku_for_row(
+    ean: str, site: str, rows_by_ean: dict[str, list[dict]]
+) -> str:
+    """
+    优先 market_region == 站点；否则取该 EAN 最新一条。
+    REAL-FB 与 REAL-DE-FB 视为可互通。
+    """
+    rows = rows_by_ean.get(ean) or []
+    if not rows:
+        return ""
+    site_norm = "REAL-DE-FB" if site == "REAL-FB" else site
+    for row in rows:
+        region = _as_text(row.get("market_region"))
+        region_norm = "REAL-DE-FB" if region == "REAL-FB" else region
+        if site_norm and region_norm == site_norm:
+            return _warehouse_sku_from_row(row)
+    return _warehouse_sku_from_row(rows[0])
+
+
+def apply_ean_mapping(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    EAN → 仓库SKU：命中写入 SKU；未命中 SKU 留空并黄字告警。
+    优先按「站点 = market_region」匹配。
+    """
+    out = df.copy()
+    ean = out["EAN"].map(_as_text)
+    site = out["站点"].map(_as_text) if "站点" in out.columns else pd.Series([""] * len(out))
+
+    db_rows = fetch_real_ean_rows(ean.tolist())
+    rows_by_ean: dict[str, list[dict]] = {}
+    for row in db_rows:
+        key = _as_text(row.get("seller_sku"))
+        if key:
+            rows_by_ean.setdefault(key, []).append(row)
+    print(
+        f"[DB] product_sku_mapping(real/platform) 命中 "
+        f"{len(rows_by_ean)} 个 EAN（{len(db_rows)} 行）"
+    )
+
+    mapped_vals = [
+        resolve_ean_sku_for_row(a, s, rows_by_ean) or pd.NA
+        for a, s in zip(ean.tolist(), site.tolist())
+    ]
+    mapped = pd.Series(mapped_vals, index=out.index)
+    hit_mask = mapped.notna() & mapped.astype(str).str.strip().ne("")
+    out["SKU"] = mapped.where(hit_mask, pd.NA)
+    miss_mask = ~hit_mask & ean.ne("")
+    print(f"[DB] 已映射 SKU {int(hit_mask.sum())} 行；未命中 {int(miss_mask.sum())} 行")
+
+    if miss_mask.any():
+        miss_eans = sorted({a for a in ean[miss_mask].tolist() if a})
+        print(
+            f"{Color.YELLOW}[检查] EAN 映射未命中示例：{miss_eans[:10]}{Color.RESET}"
         )
-    real_cz_df[cz_cost_col] = real_cz_df[cz_cost_col].astype(float)
-    if cz_currency == 'kc':
-        real_cz_df[cz_cost_col] = real_cz_df[cz_cost_col] * kc_to_EUR
-        real_cz_df = real_cz_df.rename(columns={cz_cost_col: 'Cost (€)'})
-        # 其余表头中的 Kč 一并换成 €，便于与其它站点对齐
-        real_cz_df.columns = real_cz_df.columns.str.replace('Kč', '€', regex=False)
-        real_cz_df.columns = real_cz_df.columns.str.replace('Kc', '€', regex=False)
-    elif cz_cost_col != 'Cost (€)':
-        real_cz_df = real_cz_df.rename(columns={cz_cost_col: 'Cost (€)'})
-    all_real_df = pd.concat([all_real_df_no_cz, real_cz_df], ignore_index=True)
-else:
-    print(f'未找到 CZ 广告文件，跳过：{real_cz_path}')
-    all_real_df = all_real_df_no_cz
-# 去除 整张表 的前后空格
-for col in all_real_df.columns:
-    all_real_df[col] = all_real_df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
+    return out
 
-# 删除"Cost (€)"列为  0.00、0 的行
-all_real_df = all_real_df[~all_real_df['Cost (€)'].isin(['0.00', '0'])]
-# 将列 'Cost (€)' 转换为 float 类型
-all_real_df['Cost (€)'] = all_real_df['Cost (€)'].astype(float)
 
-# print("all_real_df 的列名：", all_real_df.columns.tolist()) # 打印表头
+def load_all_real_ads(folder: Path) -> tuple[pd.DataFrame, Path]:
+    """合并非 CZ csv + 可选 CZ 文件；返回 (df, 任一源文件路径用于写输出)。"""
+    paths = [
+        f
+        for f in glob.glob(str(folder / f"*{shared_date}.csv"))
+        if not Path(f).name.startswith("REAL-CZ-FB")
+    ]
+    print(paths)
+    if not paths:
+        raise FileNotFoundError(f"未找到 REAL 广告 csv：{folder}\\*{shared_date}.csv")
 
-product_map_sku_path = fr"{DESKTOP_ROOT}\广告-SKU关系对应.xlsx"  # 改成对应的映射表
-#  映射sku（儿子）
-# REAL的EAN的对应关系不用分站点，不同站点的相同EAN对应的儿子可能不同，但是爸爸相同
-all_real_df_1 = sku_mappings(
-    main_df=all_real_df,
-    main_sku='EAN',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="EAN",
-    map_new_sku="仓库sku",
-    map_sku_sheet='REAL ENA对应表'
-)
+    df = pd.concat([csv_to_df(p) for p in paths], ignore_index=True)
 
-all_real_df_1 = all_real_df_1.rename(columns={'映射仓库sku': 'SKU'})
+    # DE/IT 为欧元；CZ 为克朗，需换汇（汇率见 A0_set_date.kc_to_EUR）
+    cz_path = folder / f"REAL-CZ-FB-广告数据-{shared_date}.csv"
+    if cz_path.is_file():
+        cz_df = csv_to_df(cz_path)
+        cz_cost_col, cz_currency = _find_cz_cost_col(cz_df.columns)
+        if cz_cost_col is None:
+            raise KeyError(
+                f"REAL-CZ-FB 未找到花费列（期望 Cost (Kč) 或 Cost (€)），"
+                f"实际列名：{cz_df.columns.tolist()}"
+            )
+        cz_df[cz_cost_col] = cz_df[cz_cost_col].astype(float)
+        if cz_currency == "kc":
+            cz_df[cz_cost_col] = cz_df[cz_cost_col] * kc_to_EUR
+            cz_df = cz_df.rename(columns={cz_cost_col: "Cost (€)"})
+            cz_df.columns = cz_df.columns.str.replace("Kč", "€", regex=False)
+            cz_df.columns = cz_df.columns.str.replace("Kc", "€", regex=False)
+        elif cz_cost_col != "Cost (€)":
+            cz_df = cz_df.rename(columns={cz_cost_col: "Cost (€)"})
+        df = pd.concat([df, cz_df], ignore_index=True)
+    else:
+        print(f"未找到 CZ 广告文件，跳过：{cz_path}")
 
-output_file_path = real_file_paths[0].rsplit('\\', 1)[0] + '\\(已完成-1)REAL广告.xlsx'
-all_real_df_1.to_excel(output_file_path, index=False)
-print(f"处理完成，结果已保存到{output_file_path}")
+    return df, Path(paths[0])
 
-#  拆分有 “+” 的sku
-all_real_df_2 = split_one_rows_data(
-    input_df=all_real_df_1,
-    data_column='SKU',
-    value_column='Cost (€)'
-)
 
-# SKU-站点识别码
-new_column_name = "SKU-站点识别码"  # 新列名
-new_column_data = all_real_df_2["站点"] + all_real_df_2["SKU"]  # 新列数据
-target_column = "SKU"  # 目标列名（在其后插入）
-insert_position = all_real_df_2.columns.get_loc(target_column) + 1  # 计算插入位置
-all_real_df_2.insert(insert_position, new_column_name, new_column_data)  # 插入新列
-# 映射 平台（数据源：platform_shop）
-all_real_df_3 = map_region_to_platform(all_real_df_2, site_col='站点')
-# 在 SKU-站点识别码 后插入 SKU-平台识别码
-new_column_name = "SKU-平台识别码"  # 新列名
-new_column_data = all_real_df_3["映射平台"] + all_real_df_3["SKU"]  # 新列数据
-target_column = "SKU-站点识别码"  # 目标列名（在其后插入）
-insert_position = all_real_df_3.columns.get_loc(target_column) + 1  # 计算插入位置
-all_real_df_3.insert(insert_position, new_column_name, new_column_data)  # 插入新列
-# 保存目标列
-all_real_df_4 = all_real_df_3[
-    ['EAN', 'SKU', '站点', '映射平台', 'SKU-站点识别码', 'SKU-平台识别码', 'Cost (€)']]
-# 更改列名，将’Cost (€)‘  改为 ’广告费(非AMZ)‘
-all_real_df_4 = all_real_df_4.rename(columns={'Cost (€)': '广告费(非AMZ)'})
+def clean_real_ads(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in out.columns:
+        out[col] = out[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
+    out = out[~out["Cost (€)"].isin(["0.00", "0", 0, 0.0])].copy()
+    out["Cost (€)"] = out["Cost (€)"].astype(float)
+    out = out[out["Cost (€)"] != 0].copy()
+    return out
 
-# 将处理后的数据保存到新的Excel文件
-output_file_path = real_file_paths[0].rsplit('\\', 1)[0] + '\\(处理完成)REAL广告.xlsx'
-all_real_df_4.to_excel(output_file_path, index=False)  # index=False表示不保存索引列
-print(f"处理完成，结果已保存到{output_file_path}")
+
+def build_output(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.insert(
+        out.columns.get_loc("SKU") + 1,
+        "SKU-站点识别码",
+        out["站点"].astype(str) + out["SKU"].astype(str),
+    )
+    out = map_region_to_platform(out, site_col="站点")
+    out.insert(
+        out.columns.get_loc("SKU-站点识别码") + 1,
+        "SKU-平台识别码",
+        out["映射平台"].astype(str) + out["SKU"].astype(str),
+    )
+    out = out[
+        [
+            "EAN",
+            "SKU",
+            "站点",
+            "映射平台",
+            "SKU-站点识别码",
+            "SKU-平台识别码",
+            "Cost (€)",
+        ]
+    ].rename(columns={"Cost (€)": "广告费(非AMZ)"})
+    return out
+
+
+def main() -> None:
+    folder = Path(DESKTOP_ROOT) / f"{folder_name}{shared_date}" / "广告" / "REAL"
+    df, sample_path = load_all_real_ads(folder)
+    df = clean_real_ads(df)
+    df = apply_ean_mapping(df)
+
+    mid_path = _sibling(sample_path, "(已完成-1)REAL广告.xlsx")
+    df.to_excel(mid_path, index=False)
+    print(f"处理完成，结果已保存到{mid_path}")
+
+    df = split_one_rows_data(
+        input_df=df, data_column="SKU", value_column="Cost (€)"
+    )
+    result = build_output(df)
+
+    out_path = _sibling(sample_path, "(处理完成)REAL广告.xlsx")
+    result.to_excel(out_path, index=False)
+    print(f"处理完成，结果已保存到{out_path}")
+
+
+if __name__ == "__main__":
+    main()
