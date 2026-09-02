@@ -10,6 +10,7 @@ _epr_mod.bootstrap(__file__)
 
 from common.sku_mapping import sku_mappings
 from common.platform_shop import map_site_vat_commission
+from common.transaction_excel import resolve_transaction_processed_file
 from config.A0_set_date import shared_date, folder_name, transaction_date
 from config.A0_paths import DESKTOP_ROOT
 
@@ -65,8 +66,9 @@ amazon_df_1 = amazon_df.groupby('订单号识别码').agg({
     '头程税费': 'sum',
 }).reset_index()
 
-# 映射 已发放-推迟订单 的AMZ派送费
-transaction_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\transaction交易明细\(处理完成)transaction交易明细_已发放-推迟订单{transaction_date}.xlsx"
+# 映射 B4_1 产出的 transaction 汇总（新格式源表经 B4_1 合并后使用）
+tx_dir = Path(DESKTOP_ROOT) / f"{folder_name}{shared_date}" / "transaction交易明细"
+transaction_path = str(resolve_transaction_processed_file(tx_dir, transaction_date))
 # 标记哪些行需要映射（两个费用都等于0）
 mask = (amazon_df_1['派送运费'] == 0) & (amazon_df_1['fba费用'] == 0)
 # 需要映射的部分
