@@ -8,6 +8,8 @@
     停用店 / EXCLUDE_SHOPS 对应行标浅红底）
   - 处理后 ``(已完成-1)FBA仓租明细{fba_date}.xlsx``（已剔除上述行）
 
+组合 SKU（含 + 或换行）：子 SKU 均能命中 product_uid 时拆行，费用均摊。
+
 用法::
 
     python modules/V3_amz_warehouse_rent/01_计算Amz仓租.py
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 import shutil
 import warnings
 from calendar import monthrange
@@ -69,6 +72,8 @@ EXCLUDE_SHOPS: list[str] = [
 _EXCLUDED_ROW_FILL = PatternFill(fill_type="solid", fgColor="FFC7CE")
 _FEE_HEADER_FILL = PatternFill(fill_type="solid", fgColor="FFFF00")
 FEE_COLS = ("仓储费用（已分摊）", "长期仓储费（已分摊）")
+# 组合分隔：+ 或换行（Excel 多行单元格常为 \r\n / \n）
+_COMBO_SPLIT_RE = re.compile(r"[+\r\n]+")
 
 _INACTIVE_SHOP_SQL = f"""
     SELECT DISTINCT TRIM(shop_name_en) AS shop_name_en
@@ -161,6 +166,26 @@ def extract_values(s):
     return s.split("#")[0].split("BCFBAFL")[0].split("FBFBAFL")[0]
 
 
+def _combo_sku_parts(sku: str) -> list[str]:
+    """按 + 或换行拆分组合 SKU；去空白后返回非空子 SKU 列表。"""
+    if sku is None or (isinstance(sku, float) and pd.isna(sku)):
+        return []
+    text = str(sku).strip()
+    if not text or text in ("nan", "None", "NaN"):
+        return []
+    return [p.strip() for p in _COMBO_SPLIT_RE.split(text) if p.strip()]
+
+
+def _avg_fee_value(val, n: int):
+    """将费用值均摊到 n 份子 SKU；非数值原样返回。"""
+    if pd.isna(val):
+        return val
+    try:
+        return float(val) / n
+    except (TypeError, ValueError):
+        return val
+
+
 def _fetch_product_uid_map(skus: list[str]) -> dict[str, str]:
     """从 product_sku 按 product_sku 查 product_uid（商品ID）。"""
     skus = sorted({str(x).strip() for x in skus if x and str(x).strip()})
@@ -195,7 +220,12 @@ def _fetch_product_uid_map(skus: list[str]) -> dict[str, str]:
 
 
 def map_sku_to_product_uid(main_df: pd.DataFrame, main_sku: str = "SKU") -> pd.DataFrame:
-    """SKU → 商品ID（product_uid）；未命中置空。原 SKU 带 -NW 时，商品ID 缀回 -NW。"""
+    """SKU → 商品ID（product_uid）；未命中置空。原 SKU 带 -NW 时，商品ID 缀回 -NW。
+
+    组合 SKU（含 + 或换行）：每个子 SKU 均能命中 product_uid 时拆成多行，
+    「仓储费用（已分摊）」/「长期仓储费（已分摊）」按子 SKU 数均摊；
+    有任一子 SKU 未命中则不拆，商品ID 置空便于核对。
+    """
     out = main_df.copy()
     if main_sku not in out.columns:
         raise KeyError(f"主表缺少列 {main_sku!r}，当前列: {list(out.columns)}")
@@ -205,18 +235,71 @@ def map_sku_to_product_uid(main_df: pd.DataFrame, main_sku: str = "SKU") -> pd.D
     nw_mask = series.str.endswith("-NW", na=False) & ~invalid
     series_no_nw = series.mask(nw_mask, series.str.replace(r"-NW$", "", regex=True))
 
-    uid_map = _fetch_product_uid_map(series_no_nw[~invalid].tolist())
+    parts_list: list[list[str]] = []
+    lookup_keys: list[str] = []
+    for sku, is_inv in zip(series_no_nw.tolist(), invalid.tolist()):
+        if is_inv:
+            parts_list.append([])
+            continue
+        parts = _combo_sku_parts(sku)
+        parts_list.append(parts)
+        lookup_keys.extend(parts)
+
+    uid_map = _fetch_product_uid_map(lookup_keys)
     print(f"[DB] product_sku 命中 {len(uid_map)} 条 product_sku → product_uid")
 
-    mapped = series_no_nw.map(uid_map)
-    mapped = mapped.mask(nw_mask & mapped.notna(), mapped.astype(str) + "-NW")
-    mapped = mapped.mask(invalid, pd.NA)
+    fee_cols = [c for c in FEE_COLS if c in out.columns]
+    records: list[pd.Series] = []
+    combo_split_cnt = 0
 
-    insert_pos = out.columns.get_loc(main_sku) + 1
-    if "商品ID" in out.columns:
-        out = out.drop(columns=["商品ID"])
-    out.insert(insert_pos, "商品ID", mapped)
-    return out
+    for i in range(len(out)):
+        row = out.iloc[i]
+        parts = parts_list[i]
+        is_inv = bool(invalid.iloc[i])
+        is_nw = bool(nw_mask.iloc[i])
+
+        # 组合且每个子 SKU 都能命中 → 拆行均摊
+        if (not is_inv) and len(parts) > 1 and all(p in uid_map for p in parts):
+            combo_split_cnt += 1
+            n = len(parts)
+            for p in parts:
+                new_row = row.copy()
+                new_row[main_sku] = f"{p}-NW" if is_nw else p
+                uid = uid_map[p]
+                new_row["_mapped_uid"] = f"{uid}-NW" if is_nw else uid
+                for col in fee_cols:
+                    new_row[col] = _avg_fee_value(row[col], n)
+                records.append(new_row)
+            continue
+
+        new_row = row.copy()
+        if is_inv or not parts:
+            new_row["_mapped_uid"] = pd.NA
+        elif len(parts) == 1:
+            uid = uid_map.get(parts[0])
+            new_row["_mapped_uid"] = (
+                f"{uid}-NW" if (uid and is_nw) else (uid if uid else pd.NA)
+            )
+        else:
+            # 组合但有子 SKU 未命中：不拆分，商品ID 留空便于人工核对
+            new_row["_mapped_uid"] = pd.NA
+        records.append(new_row)
+
+    result = pd.DataFrame([r.to_dict() for r in records]).reset_index(drop=True)
+    mapped = result["_mapped_uid"]
+    result = result.drop(columns=["_mapped_uid"])
+
+    if "商品ID" in result.columns:
+        result = result.drop(columns=["商品ID"])
+    insert_pos = result.columns.get_loc(main_sku) + 1
+    result.insert(insert_pos, "商品ID", mapped)
+
+    if combo_split_cnt:
+        print(
+            f"{Color.YELLOW}[组合SKU]{Color.RESET} 拆分 {combo_split_cnt} 行"
+            f"（SKU 含 + / 换行且子 SKU 均命中），费用按子 SKU 均摊"
+        )
+    return result
 
 
 def _blank_mask(series: pd.Series) -> pd.Series:

@@ -5,7 +5,8 @@ C1_2_Mano合并VAT.py — 按SKU-站点识别码汇总 MANO VAT 和佣金（仅�
   1. 读取 仓租\\mano 目录下 (已完成-1)MANO-VAT和佣金-*.xlsx
   2. 按「SKU-站点识别码」分组（等同 VLOOKUP 汇总）
   3. quantity 与费用列求和，维度列保留每组首行
-  4. 输出 (处理完成)MANO-VAT和佣金-*.xlsx
+  4. 图中全部站点（DE/FR/IT/ES COM&COMMF 等）的 vatOnProduct 置 0
+  5. 输出 (处理完成)MANO-VAT和佣金-*.xlsx
 """
 
 import importlib.util
@@ -37,6 +38,22 @@ SITE_COL = "站点"
 SELLER_SKU_COL = "sellerSku"
 WH_SKU_COL = "仓库SKU"
 PRODUCT_UID_COL = "商品ID"
+VAT_ON_PRODUCT_COL = "vatOnProduct"
+
+# 这些站点的 vatOnProduct 强制置 0
+_ZERO_VAT_ON_PRODUCT_SITES = frozenset(
+    {
+        "MANO-DE-COM",
+        "MANO-FR-COM",
+        "MANO-IT-COM",
+        "MANO-DE-COMMF",
+        "MANO-FR-COMMF",
+        "MANO-IT-COMMF",
+        "MANO-ES-COMMF",
+        "MANO-DE-COMMF-B2B",
+        "MANO-FR-COMMF-B2B",
+    }
+)
 
 MANO_DIR = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\仓租\mano-vat"
 INPUT_GLOB = "(已完成-1)MANO-VAT和佣金-*.xlsx"
@@ -112,6 +129,10 @@ def _group_by_son_site_id(df: pd.DataFrame) -> pd.DataFrame:
     for col in sum_cols:
         grouped[col] = pd.to_numeric(grouped[col], errors="coerce").fillna(0)
         grouped[col] = np.round(grouped[col], 2)
+
+    if VAT_ON_PRODUCT_COL in grouped.columns and SITE_COL in grouped.columns:
+        mask = grouped[SITE_COL].isin(_ZERO_VAT_ON_PRODUCT_SITES)
+        grouped.loc[mask, VAT_ON_PRODUCT_COL] = 0
 
     # 输出列：维度列靠前，数量/费用列随后（保持与源表相近的可读顺序）
     ordered_cols = [SON_SITE_ID_COL]

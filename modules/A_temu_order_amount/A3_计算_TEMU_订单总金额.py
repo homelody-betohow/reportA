@@ -11,6 +11,7 @@ _epr_mod.bootstrap(__file__)
 
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
+from modules.setting import _skip_shops
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl.styles.stylesheet")
 # TODO 文件路径！！！
@@ -28,6 +29,9 @@ main_df = main_df[main_df['订单销售状态'] != '问题件']
 
 # 过滤掉 “订单销售状态” 为 “冻结中” 的行
 main_df = main_df[main_df['订单销售状态'] != '冻结中']
+
+# 过滤指定店铺
+main_df = main_df[~main_df['店铺英文名'].isin(_skip_shops)]
 
 # 过滤指定订单，不统计利润
 filter_order_nos = [

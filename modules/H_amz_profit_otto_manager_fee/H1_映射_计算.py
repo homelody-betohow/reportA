@@ -3,7 +3,7 @@ H1 映射计算 —— AMZ SellerSku 利润报表预处理（H 系列第 1 步�
 
 作用概述：
   1. 读取原始 SellerSku 利润报表
-  2. 过滤无关店铺与空 sellerSku、拆分组合 SKU（sellerSku 含 +）、汇总广告费/赔偿/其他分摊费用
+  2. 过滤无关店铺；sellerSku 为空则保留并将 SKU 标为「无」；拆分组合 SKU（sellerSku 含 +）；汇总广告费/赔偿/其他分摊费用
   3. 清洗并标准化 SKU
   4. 从 platform_shop 将店铺映射为站点、平台
   5. 生成「SKU-站点识别码」「SKU-平台识别码」供后续 H2~H4 合并分摊
@@ -33,6 +33,7 @@ from common.split_rows_data_SKU import (
 )
 from common.platform_shop import map_shop_platform_region
 from config.A0_paths import SELLERSKU_PROFIT_FILE_NAME, SELLERSKU_PROFIT_REPORT_DIR
+from modules.setting import _skip_shops
 
 # 组合 SKU 拆分时需均摊的金额列（与下方「计算结果」汇总所用列一致）
 _COMBO_FEE_COLUMNS = [
@@ -51,7 +52,7 @@ try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
-
+    
 # ---------------------------------------------------------------------------
 # 一、读取原始利润报表
 # ---------------------------------------------------------------------------
@@ -66,15 +67,23 @@ for col in main_file_df.columns:
 # ---------------------------------------------------------------------------
 # 二、筛选店铺 & 计算汇总费用列
 # ---------------------------------------------------------------------------
-# 排除 ECO、Biancca、yiqianshangmao_DE 等非本报表统计范围的店铺
-main_file_df_1 = main_file_df[~main_file_df['店铺'].str.contains('ECO|Biancca|yiqianshangmao_DE', na=False)]
+# 店铺 yiqianshangmao / CastanhoPT 等不纳入本报表（名单见 modules.setting._skip_shops）
+_skip_shop = main_file_df['店铺'].astype(str).str.strip().isin(_skip_shops)
+_skip_shop_cnt = int(_skip_shop.sum())
+if _skip_shop_cnt > 0:
+    print(f"{Color.YELLOW}[过滤]{Color.RESET} 店铺 in {_skip_shops} {_skip_shop_cnt} 行")
+main_file_df_1 = main_file_df.loc[~_skip_shop].copy()
+# main_file_df_1 = main_file_df[~main_file_df['店铺'].str.contains('ECO|Biancca|yiqianshangmao_DE', na=False)]
 
-# sellerSku 为空则跳过，不写入 (已完成-1)
+
+# sellerSku 为空则保留：清空 sellerSku/仓库sku，后续清洗后 SKU 标为「无」（供 H2 汇总进 EU/US 待摊）
 _empty_sku_mask = main_file_df_1['sellerSku'].isna() | (main_file_df_1['sellerSku'].astype(str).str.strip() == '')
 _empty_sku_cnt = int(_empty_sku_mask.sum())
 if _empty_sku_cnt > 0:
-    print(f"{Color.YELLOW}[跳过]{Color.RESET} sellerSku 为空 {_empty_sku_cnt} 行，不写入 (已完成-1)")
-    main_file_df_1 = main_file_df_1.loc[~_empty_sku_mask].copy()
+    print(f"{Color.YELLOW}[保留]{Color.RESET} sellerSku 为空 {_empty_sku_cnt} 行，SKU 标为「无」")
+    main_file_df_1.loc[_empty_sku_mask, 'sellerSku'] = pd.NA
+    if '仓库sku' in main_file_df_1.columns:
+        main_file_df_1.loc[_empty_sku_mask, '仓库sku'] = pd.NA
 
 # ---------------------------------------------------------------------------
 # 2.5 拆分组合 SKU（sellerSku 含 '+' 或 ','）
@@ -129,6 +138,9 @@ def extract_values(s):
 main_file_df_1['仓库sku'] = main_file_df_1['仓库sku'].apply(extract_values)
 main_file_df_1 = main_file_df_1.rename(columns={'仓库sku': 'SKU'})
 main_file_df_1['SKU'] = main_file_df_1['SKU'].fillna('无')
+# sellerSku 原本为空的行，强制 SKU=「无」（避免空串等被 extract 成异常值）
+_empty_seller = main_file_df_1['sellerSku'].isna() | (main_file_df_1['sellerSku'].astype(str).str.strip() == '')
+main_file_df_1.loc[_empty_seller, 'SKU'] = '无'
 
 # 历史数据中个别 SKU 单元格含换行拼接的多编码，统一替换为第一个有效编码
 replacements = {
@@ -159,6 +171,9 @@ main_file_df_3 = main_file_df_1[
      'SKU-平台识别码', 'SD广告费', 'SP广告费', 'SB广告费', 'SBV广告费', '其他交易费汇总', '移除费用', '合作承运费',
      '合仓费', '超量费', '其他FBA库存和入境服务费', 'FBA退货处理费', 'coupon优惠券', 'FBA月订阅费(平台店租)',
      '其他服务费', '平台其他支出汇总', '计算结果-广告费', '计算结果-赔偿', '计算结果-其他分摊费用']]
+
+# 将 hknovaflow_UK 店铺 替换成 hknovaflow_DE 店铺
+# main_file_df_3.loc[main_file_df_3['店铺'] == 'hknovaflow_UK', '店铺'] = 'hknovaflow_DE'
 
 # ---------------------------------------------------------------------------
 # 五、映射完整性校验（有空值则中断，提示在 platform_shop 补齐）

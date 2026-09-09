@@ -20,6 +20,7 @@ A1_日报文件检查
 
 源目录三：\\\\Betohow\\数据报表\\报表自动化下载\\广告下载\\{每天|每月}
   - OTTO / Real / DLZ / Mano
+  - Mano 月报：广告下载\\每月\\Mano\\YYYY-MM（文件名优先 *-M.1-YYYY-MM.csv）
   - 测评表（始终从「广告下载\\每天\\测评表」取 report_date 文件）
 
 秒杀费用已由 E1 从 DB amz_seckill_cost 读取，本脚本不再检查/复制网络盘秒杀文件。
@@ -341,12 +342,19 @@ def _build_ad_check_items(
         otto_source = roots.ad / "OTTO" / keys.month_num
         real_source = roots.ad / "Real" / keys.report_ym
         dlz_source = roots.ad / "DLZ" / keys.report_ym
+        # 月报：…\广告下载\每月\Mano\YYYY-MM（如 2026-08）
         mano_source = roots.ad / "Mano" / keys.report_ym
+        # 新命名：*-8.1-2026-08.csv；旧命名：*-8.1-8.31.csv（shared_date）
+        mano_period_tag = f"{keys.month_num}.1-{keys.report_ym}"
+        mano_patterns = (f"*{mano_period_tag}.csv", f"*{shared_date}.csv")
+        mano_prefer = mano_period_tag
     else:
         otto_source = roots.ad / "OTTO" / keys.report_md
         real_source = roots.ad / "Real" / keys.report_md
         dlz_source = roots.ad / "DLZ" / keys.report_md
         mano_source = roots.ad / "Mano" / keys.report_md
+        mano_patterns = (f"*{shared_date}.csv",)
+        mano_prefer = shared_date
 
     # 测评表只落在「广告下载\每天\测评表」，月报取月末 report_iso
     review_source = DAILY_AD_SOURCE_BASE / "测评表"
@@ -386,8 +394,8 @@ def _build_ad_check_items(
             source_dir=mano_source,
             dest_dir=period_dir / "广告" / "MANO",
             dest_name="",
-            patterns=(f"*{shared_date}.csv",),
-            prefer_contains=shared_date,
+            patterns=mano_patterns,
+            prefer_contains=mano_prefer,
             copy_recursive=True,
         ),
         FileCheckItem(
