@@ -32,7 +32,11 @@ main_df = main_df[main_df['订单销售状态'] != '问题件']
 main_df = main_df[main_df['订单销售状态'] != '冻结中']
 
 # 过滤指定店铺
-main_df = main_df[~main_df['店铺英文名'].isin(_skip_shops)]
+_skip_shop = main_df["店铺英文名"].astype(str).str.strip().isin(_skip_shops)
+_skip_shop_cnt = int(_skip_shop.sum())
+if _skip_shop_cnt:
+    print(f"{Color.YELLOW}[过滤]{Color.RESET} 店铺 in {_skip_shops} {_skip_shop_cnt} 行")
+main_df = main_df.loc[~_skip_shop].copy()
 
 # 过滤指定订单，不统计利润
 filter_order_nos = [
