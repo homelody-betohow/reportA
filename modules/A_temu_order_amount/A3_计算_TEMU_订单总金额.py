@@ -9,6 +9,7 @@ _epr_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_epr_mod)
 _epr_mod.bootstrap(__file__)
 
+from common.style import Color
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
 from modules.setting import _skip_shops

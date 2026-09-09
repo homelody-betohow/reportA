@@ -2,6 +2,7 @@ import importlib.util
 import warnings
 from pathlib import Path
 
+
 # 须在 import config/common 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
 _epr_file = next(p / "ensure_project_root.py" for p in Path(__file__).resolve().parents if (p / "ensure_project_root.py").is_file())
 _spec = importlib.util.spec_from_file_location("ensure_project_root", _epr_file)
@@ -14,6 +15,7 @@ _epr_mod.bootstrap(__file__)
 import numpy as np
 import pandas as pd
 from common.style import Color
+from modules.setting import _skip_shops
 from common.platform_shop import map_shop_platform_region, map_site_vat_commission
 from config.A0_paths import (
     SELLERSKU_PROFIT_FILE_NAME,
@@ -44,7 +46,15 @@ for col in main_file_df.columns:
     main_file_df[col] = main_file_df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
 
 # 筛选  “店铺”不包含 ECO、Biancca、yiqianshangmao_DE 的行
-main_file_df = main_file_df[~main_file_df['店铺'].str.contains('ECO|Biancca|yiqianshangmao_DE', na=False)]
+# main_file_df = main_file_df[~main_file_df['店铺'].str.contains('ECO|Biancca|yiqianshangmao_DE', na=False)]
+# 店铺 yiqianshangmao 等不纳入本流程（名单见 modules.setting._skip_shops）
+_skip_shop = main_file_df["店铺"].astype(str).str.strip().isin(_skip_shops)
+_skip_shop_cnt = int(_skip_shop.sum())
+if _skip_shop_cnt:
+    print(f"{Color.YELLOW}[过滤]{Color.RESET} 店铺 in {_skip_shops} {_skip_shop_cnt} 行")
+main_file_df = main_file_df.loc[~_skip_shop].copy()
+
+
 
 # 使用 sellerSku 列的数据填充 仓库sku 列的空值
 main_file_df['仓库sku'] = main_file_df['仓库sku'].fillna(main_file_df['sellerSku'])

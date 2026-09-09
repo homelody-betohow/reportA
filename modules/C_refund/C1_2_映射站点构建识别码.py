@@ -29,6 +29,7 @@ from common.style import Color
 from common.platform_shop import apply_lm_fr_region_suffix, map_shop_platform_region
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
+from modules.setting import _skip_shops
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl.styles.stylesheet")
 
@@ -46,9 +47,17 @@ for col in RMA_file_df.columns:
     RMA_file_df[col] = RMA_file_df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
 
 # 筛选「店铺英文名」不包含 ECO、Biancca、yiqianshangmao_DE 的行
-RMA_file_df_1 = RMA_file_df[
-    ~RMA_file_df['店铺英文名'].str.contains('ECO|Biancca|yiqianshangmao_DE', na=False)
-].copy()
+# RMA_file_df_1 = RMA_file_df[
+#     ~RMA_file_df['店铺英文名'].str.contains('ECO|Biancca|yiqianshangmao_DE', na=False)
+# ].copy()
+
+# 筛选  “店铺英文名” _skip_shops
+_skip_shop = RMA_file_df["店铺英文名"].astype(str).str.strip().isin(_skip_shops)
+_skip_shop_cnt = int(_skip_shop.sum())
+if _skip_shop_cnt:
+    print(f"{Color.YELLOW}[过滤]{Color.RESET} 店铺 in {_skip_shops} {_skip_shop_cnt} 行")
+RMA_file_df_1 = RMA_file_df.loc[~_skip_shop].copy()
+
 
 # 例外列表：不去掉尾缀的仓库 SKU
 exceptions = ['XPYN2125D-1', 'EXPYN2125D-1', 'EBS8029-1']
