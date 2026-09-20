@@ -555,7 +555,8 @@ def _build_product_turnover(
 ) -> pd.DataFrame:
     """
     由各销售平台SKU库存动销明细汇总商品级周转明细：
-    商品ID 为空 → SKU；按 group_keys 分组，数值列求和（货值除外），周转天数重算。
+    商品ID 为空 → SKU；同组内按 SKU 编码降序取 first（SKU/负责人/货值等）；
+    数值列求和（货值除外），周转天数重算。
     """
     drop_set = frozenset(drop_cols)
     cols = [c for c in _EXPORT_COLS if c in sku_df.columns and c not in drop_set]
@@ -563,6 +564,9 @@ def _build_product_turnover(
         return pd.DataFrame(columns=cols)
 
     src = _fill_blank_product_id(sku_df)
+    # 同组 first 取 SKU 编码最大的一行（及同行文本/单价字段）
+    if "SKU" in src.columns:
+        src = src.sort_values("SKU", ascending=False, kind="mergesort")
     for key in group_keys:
         if key not in src.columns:
             raise KeyError(f"商品级汇总缺少分组列：{key}")
