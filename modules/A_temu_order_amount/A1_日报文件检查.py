@@ -20,6 +20,7 @@ A1_日报文件检查
 
 源目录三：\\\\Betohow\\数据报表\\报表自动化下载\\广告下载\\{每天|每月}
   - OTTO / Real / DLZ / Mano
+  - OTTO 月报：广告下载\\每月\\OTTO\\YYYY-MM（如 2026-09）
   - Mano 月报：广告下载\\每月\\Mano\\YYYY-MM（文件名优先 *-M.1-YYYY-MM.csv）
   - 测评表（始终从「广告下载\\每天\\测评表」取 report_date 文件）
 
@@ -29,7 +30,7 @@ A1_日报文件检查
   - 日报子目录：YYYY-MM-DD 或 M.D（仓租优先 ISO）
   - 月报子目录：YYYY-MM / M月 / M月份 / 月末 M.D 等（见各 _build_*）
   - transaction：日报用当天子目录 + transaction_date；
-    月报用月末 M.D 子目录 + 文件名含 shared_date，复制时按 transaction_date 命名
+    月报用当月5号 YYYY-MM-05 子目录（如 2026-10-05）+ 文件名含 transaction_date（如 9.1-10.5）
 """
 from __future__ import annotations
 
@@ -251,9 +252,10 @@ def _build_other_report_items(
 
     if roots.is_monthly:
         erp_source = erp_dir / keys.report_ym
-        tx_source = tx_dir / keys.report_md
-        # 月报源文件名多为 shared_date（整月），桌面仍按 transaction_date 命名供 B4 使用
-        tx_prefer = shared_date
+        # 月报源：…\transaction交易明细\YYYY-MM-05（每月5号下载）
+        # 文件名如 transaction交易明细-已发放订单9.1-10.5.xlsx
+        tx_source = tx_dir / f"{datetime.today().year}-{datetime.today().month:02d}-05"
+        tx_prefer = transaction_date
         relist_source = relist_dir / keys.month_label
         profit_source = _first_existing_dir(profit_dir / keys.report_ym, profit_dir)
     else:
@@ -339,7 +341,8 @@ def _build_ad_check_items(
     period_dir: Path, roots: SourceRoots, keys: DateKeys
 ) -> list[FileCheckItem]:
     if roots.is_monthly:
-        otto_source = roots.ad / "OTTO" / keys.month_num
+        # 月报：…\广告下载\每月\OTTO\YYYY-MM（如 2026-09）
+        otto_source = roots.ad / "OTTO" / keys.report_ym
         real_source = roots.ad / "Real" / keys.report_ym
         dlz_source = roots.ad / "DLZ" / keys.report_ym
         # 月报：…\广告下载\每月\Mano\YYYY-MM（如 2026-08）
