@@ -646,7 +646,7 @@ print(
 # ---------- ② 欧洲平台定价表（仅 DB 未命中）----------
 # 表头第 2 行（iloc[1]）为「派送费-映射分类」列名，与订单分类对齐后做 VLOOKUP 式映射
 product_map_sku_dir = r"\\Betohow\数据报表\2-定价表"
-product_map_sku_file = "欧洲平台定价表 2026.0708.xlsx"
+product_map_sku_file = "欧洲平台定价表 2026.0908.xlsx"
 product_map_sku_path = fr"{product_map_sku_dir}\{product_map_sku_file}"
 header_list = pd.read_excel(product_map_sku_path, sheet_name="基础表").iloc[1].fillna("").tolist()
 

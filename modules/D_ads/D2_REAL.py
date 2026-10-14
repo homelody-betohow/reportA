@@ -5,7 +5,7 @@ D2_REAL.py — REAL 广告 CSV → (处理完成)REAL广告.xlsx
   1. 读桌面 REAL 各站点 csv（按文件名识别站点），合并；CZ 单独读并换汇
   2. 清洗 Cost (€)，去掉 0 花费
   3. EAN → product_sku_mapping(real/platform).seller_sku 换仓库 SKU
-     （命中写入 SKU；未命中 SKU 留空并黄字列 EAN）
+     （命中写入 SKU；未命中 SKU 留空，并写入待维护行：product_sku 空、is_active=1、check_state=0）
      bundle：按 component_info 的 qty 重复拼成 A,B,B…，再经 split_one_rows_data 按份数分摊
   4. 组合 SKU（+ / ,）拆行均摊广告费
   5. 生成 SKU-站点识别码 / SKU-平台识别码，写出处理完成 Excel
@@ -16,6 +16,7 @@ D2_REAL.py — REAL 广告 CSV → (处理完成)REAL广告.xlsx
 from __future__ import annotations
 
 import glob
+import hashlib
 import importlib.util
 import json
 import os
@@ -44,8 +45,28 @@ from config.A0_set_date import folder_name, kc_to_EUR, shared_date
 from database.db_connection import get_db_manager
 
 PSM_TABLE = "product_sku_mapping"
+PLATFORM_SHOP_TABLE = "platform_shop"
 PARTNER_CODE_REAL = "real"
+PARTNER_TYPE_PLATFORM = "platform"
+SOURCE_TYPE_REAL_ADS = "REALAds"
 _KEY_CHUNK = 200
+_SELLER_SKU_MAX_LEN = 128
+
+# line_hash 参与列（与 product_sku_mapping 表注释一致）
+_PSM_HASH_FIELDS = (
+    "partner_code",
+    "partner_type",
+    "partner_name",
+    "shop_hash",
+    "seller_sku",
+    "warehouse_sku",
+    "mapping_type",
+    "product_sku",
+)
+
+_SITE_ALIASES = {
+    "REAL-FB": "REAL-DE-FB",
+}
 
 _SITE_MARKERS = (
     ("REAL-DE-FB", "REAL-DE-FB"),
@@ -250,6 +271,10 @@ def fetch_real_ean_rows(eans: list[Any]) -> list[dict]:
         WHERE partner_code = %s
           AND partner_type = 'platform'
           AND is_active = 1
+          AND (
+                (mapping_type = 'single' AND TRIM(product_sku) <> '')
+                OR (mapping_type = 'bundle' AND component_info IS NOT NULL)
+              )
           AND seller_sku IN ({{placeholders}})
         ORDER BY updated_at DESC
     """
@@ -273,6 +298,199 @@ def resolve_ean_sku_for_row(
         if site_norm and region_norm == site_norm:
             return _warehouse_sku_from_row(row)
     return _warehouse_sku_from_row(rows[0])
+
+
+def _normalize_site(site: str) -> str:
+    site = _as_text(site)
+    return _SITE_ALIASES.get(site, site)
+
+
+def _psm_line_hash(
+    *,
+    partner_name: str,
+    shop_hash: str,
+    seller_sku: str,
+    product_sku: str = "",
+) -> str:
+    record = {
+        "partner_code": PARTNER_CODE_REAL,
+        "partner_type": PARTNER_TYPE_PLATFORM,
+        "partner_name": partner_name,
+        "shop_hash": shop_hash,
+        "seller_sku": seller_sku,
+        "warehouse_sku": "",
+        "mapping_type": "single",
+        "product_sku": product_sku,
+    }
+    parts = [str(record.get(k) or "").strip() for k in _PSM_HASH_FIELDS]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def _fetch_shop_by_region() -> dict[str, dict[str, str]]:
+    """market_region → {shop_hash, partner_name, market_code}。"""
+    sql = f"""
+        SELECT shop_hash, shop_alias, market_region, market_code
+        FROM `{PLATFORM_SHOP_TABLE}`
+        WHERE platform = %s
+          AND market_region IS NOT NULL
+          AND TRIM(market_region) <> ''
+    """
+    mapping: dict[str, dict[str, str]] = {}
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(sql, (PARTNER_CODE_REAL,))
+            for row in cur.fetchall():
+                region = _as_text(row.get("market_region"))
+                if not region:
+                    continue
+                mapping[region] = {
+                    "shop_hash": _as_text(row.get("shop_hash")),
+                    "partner_name": _as_text(row.get("shop_alias")) or "REAL",
+                    "market_code": _as_text(row.get("market_code")) or "REAL",
+                }
+    finally:
+        conn.close()
+    return mapping
+
+
+def _fetch_existing_real_ean_keys(eans: list[str]) -> set[tuple[str, str]]:
+    """已有 real/platform 行，键为 (seller_sku, shop_hash)。"""
+    keys = _unique_keys(eans)
+    if not keys:
+        return set()
+    existing: set[tuple[str, str]] = set()
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            for i in range(0, len(keys), _KEY_CHUNK):
+                chunk = keys[i : i + _KEY_CHUNK]
+                placeholders = ", ".join(["%s"] * len(chunk))
+                sql = f"""
+                    SELECT seller_sku, shop_hash
+                    FROM `{PSM_TABLE}`
+                    WHERE partner_code = %s
+                      AND partner_type = %s
+                      AND seller_sku IN ({placeholders})
+                """
+                cur.execute(sql, (PARTNER_CODE_REAL, PARTNER_TYPE_PLATFORM, *chunk))
+                for row in cur.fetchall():
+                    ean = _as_text(row.get("seller_sku"))
+                    if ean:
+                        existing.add((ean, _as_text(row.get("shop_hash"))))
+    finally:
+        conn.close()
+    return existing
+
+
+def _insert_pending_real_mappings(pairs: list[tuple[str, str]]) -> tuple[int, int]:
+    """
+    未命中 EAN 写入 product_sku_mapping（real / platform）。
+
+    待人工维护：product_sku 空串、is_active=1、check_state=0、mapping_type=single。
+    填好 product_sku 后把 check_state 改为 1。
+    同一 EAN + 店铺已存在则跳过。
+    返回 (新建条数, 已存在条数)。
+    """
+    shop_map = _fetch_shop_by_region()
+    pending: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    warn_no_shop: set[str] = set()
+    for ean, site in pairs:
+        ean = _as_text(ean)[:_SELLER_SKU_MAX_LEN]
+        site = _normalize_site(site)
+        if not ean:
+            continue
+        shop = shop_map.get(site)
+        if not shop:
+            warn_no_shop.add(site or "(空)")
+            shop = {"shop_hash": "", "partner_name": "REAL", "market_code": "REAL"}
+        key = (ean, shop["shop_hash"])
+        if key in seen:
+            continue
+        seen.add(key)
+        pending.append(
+            {
+                "ean": ean,
+                "site": site,
+                "shop_hash": shop["shop_hash"],
+                "partner_name": shop["partner_name"],
+                "market_code": shop["market_code"],
+            }
+        )
+    if warn_no_shop:
+        print(
+            f"{Color.YELLOW}[提示] 以下站点在 platform_shop 无匹配，"
+            f"shop_hash 置空：{sorted(warn_no_shop)}{Color.RESET}"
+        )
+    if not pending:
+        return 0, 0
+
+    existing = _fetch_existing_real_ean_keys([p["ean"] for p in pending])
+    to_insert = [p for p in pending if (p["ean"], p["shop_hash"]) not in existing]
+    n_exist = len(pending) - len(to_insert)
+    if not to_insert:
+        return 0, n_exist
+
+    sql = f"""
+        INSERT INTO `{PSM_TABLE}` (
+            line_hash, partner_code, partner_type, partner_name, shop_hash,
+            market_region, market_code, seller_ean, seller_sku, warehouse_sku,
+            mapping_type, product_sku, component_info, source_type, is_active,
+            check_state
+        ) VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, '',
+            'single', '', NULL, %s, 1, 0
+        )
+    """
+    n_new = 0
+    db = get_db_manager()
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            for rec in to_insert:
+                line_hash = _psm_line_hash(
+                    partner_name=rec["partner_name"],
+                    shop_hash=rec["shop_hash"],
+                    seller_sku=rec["ean"],
+                )
+                try:
+                    cur.execute(
+                        sql,
+                        (
+                            line_hash,
+                            PARTNER_CODE_REAL,
+                            PARTNER_TYPE_PLATFORM,
+                            rec["partner_name"],
+                            rec["shop_hash"],
+                            rec["site"] or None,
+                            rec["market_code"],
+                            rec["ean"],
+                            rec["ean"],
+                            SOURCE_TYPE_REAL_ADS,
+                        ),
+                    )
+                    if cur.rowcount:
+                        n_new += 1
+                except (pymysql.err.IntegrityError, pymysql.err.OperationalError) as exc:
+                    print(
+                        f"{Color.RED}[写入失败] EAN={rec['ean']!r} "
+                        f"site={rec['site']!r} → {exc}{Color.RESET}"
+                    )
+                    err = str(exc)
+                    if "chk_psm_mapping_payload" in err:
+                        print(
+                            f"{Color.YELLOW}[提示] 请先执行 "
+                            f"database/alter/alter_product_sku_mapping_allow_empty_product_sku.sql"
+                            f"{Color.RESET}"
+                        )
+        conn.commit()
+    finally:
+        conn.close()
+    return n_new, n_exist
 
 
 def apply_ean_mapping(df: pd.DataFrame) -> pd.DataFrame:
@@ -306,9 +524,32 @@ def apply_ean_mapping(df: pd.DataFrame) -> pd.DataFrame:
     print(f"[DB] 已映射 SKU {int(hit_mask.sum())} 行；未命中 {int(miss_mask.sum())} 行")
 
     if miss_mask.any():
-        miss_eans = sorted({a for a in ean[miss_mask].tolist() if a})
+        miss_pairs = list(
+            {
+                (a, s)
+                for a, s in zip(ean[miss_mask].tolist(), site[miss_mask].tolist())
+                if a
+            }
+        )
+        miss_eans = sorted({a for a, _ in miss_pairs})
         print(
             f"{Color.YELLOW}[检查] EAN 映射未命中示例：{miss_eans[:10]}{Color.RESET}"
+        )
+        n_new, n_exist = _insert_pending_real_mappings(miss_pairs)
+        print(
+            f"{Color.YELLOW}[待维护] 已写入 `{PSM_TABLE}`："
+            f"新建 {n_new} 条；库中已有 {n_exist} 条"
+            f"（共 {len(miss_pairs)} 个 EAN+站点）{Color.RESET}"
+        )
+        print(
+            f"{Color.CYAN}请人工维护 `{PSM_TABLE}`：\n"
+            f"  - partner_code={PARTNER_CODE_REAL}, partner_type={PARTNER_TYPE_PLATFORM}, "
+            f"source_type={SOURCE_TYPE_REAL_ADS}\n"
+            f"  - 条件示例：WHERE partner_code='{PARTNER_CODE_REAL}' "
+            f"AND partner_type='{PARTNER_TYPE_PLATFORM}' AND check_state=0 "
+            f"AND source_type='{SOURCE_TYPE_REAL_ADS}'\n"
+            f"  - 新建行 is_active=1、check_state=0；seller_sku / seller_ean 为 EAN\n"
+            f"  - 填写 product_sku 后把 check_state 改为 1，再重新执行本脚本{Color.RESET}"
         )
     return out
 

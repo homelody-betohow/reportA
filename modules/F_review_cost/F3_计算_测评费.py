@@ -33,6 +33,11 @@ test_file_df.loc[mask_2, '测评费'] = test_file_df['报表金额'] * 1.05 + 0.
 mask_3 = test_file_df['退款类型'] == '测评退订单金额70%'
 test_file_df.loc[mask_3, '测评费'] = test_file_df['报表金额'] * 1.05 * 0.7 + 0.34
 #
+# 筛选条件：退款类型是 "测评退订单金额80%"
+mask_4 = test_file_df['退款类型'] == '测评退订单金额80%'
+test_file_df.loc[mask_4, '测评费'] = test_file_df['报表金额'] * 1.05 * 0.8 + 0.34
+
+#
 # 筛选条件：退款类型是 "佣金"
 mask_4 = test_file_df['退款类型'] == '佣金'
 test_file_df.loc[mask_4, '测评费'] = test_file_df['报表金额']

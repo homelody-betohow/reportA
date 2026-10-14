@@ -109,8 +109,10 @@ test_file_df.columns = test_file_df.columns.str.strip()
 
 # 仅保留 “退款类型” 为 
 # “测评退订单金额” 或 “空包退订单金额” 或 “佣金” 或 “好评返现” 的行
-# 注意：不要过滤掉 “测评退订单金额70%”
-test_file_df = test_file_df[test_file_df['退款类型'].isin(['测评退订单金额','测评退订单金额70%', '空包退订单金额', '好评返现', '佣金'])]
+# 注意：不要过滤掉 “测评退订单金额70%” 或 “测评退订单金额80%”
+test_file_df = test_file_df[test_file_df['退款类型'].isin([
+    '测评退订单金额','测评退订单金额70%','测评退订单金额80%', '空包退订单金额', '好评返现', '佣金'
+])]
 #
 # ===== 2026.5 新表头适配：币种列检查 =====
 # 新表头：订单币种、退款币种、实际退款币种
@@ -137,6 +139,14 @@ test_file_df = test_file_df[(test_file_df['退款日期'] >= start_date) & (test
 # 去除 整张表 的前后空格
 for col in test_file_df.columns:
     test_file_df[col] = test_file_df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
+# 忽略 Amazon VC 平台行（下划线与连字符视为同一平台名）
+_ignored_platforms = {'AMAZON-DE-VC', 'AMAZON-FR-VC'}
+_platform_norm = test_file_df['平台'].astype(str).str.strip().str.replace('_', '-', regex=False)
+_ignored_mask = _platform_norm.isin(_ignored_platforms)
+if _ignored_mask.any():
+    print(f"忽略平台 {_ignored_platforms} 共 {_ignored_mask.sum()} 行")
+    test_file_df = test_file_df.loc[~_ignored_mask].copy()
+    
 # 保存修改后的（保留所有原始列：订单币种、退款币种、实际退款币种）
 output_path = fr"{output_dir}\(已完成-1)测评表.xlsx"
 test_file_df.to_excel(output_path, index=False)

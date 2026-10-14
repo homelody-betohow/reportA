@@ -1,4 +1,5 @@
 import pandas as pd
+import pymysql.cursors
 import importlib.util
 from pathlib import Path
 # 须在 import config/common 之前：加载项目根到 sys.path（逻辑见项目根 ensure_project_root.py）
@@ -12,6 +13,66 @@ from common.style import Color
 from common.sku_mapping import sku_mappings
 from config.A0_set_date import shared_date, folder_name
 from config.A0_paths import DESKTOP_ROOT
+from database.db_connection import get_db_manager
+
+PRODUCT_SKU_TABLE = "product_sku"
+_KEY_CHUNK = 500
+_BLANK = frozenset({"", "nan", "None", "NaN", "none"})
+# 产品状态仍为空时，用桌面手工表兜底（不在 product_sku 里）
+INFO_MAP_XLSX = Path(DESKTOP_ROOT) / "信息-映射.xlsx"
+
+
+def _lookup_sku_keys(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """与原 Excel 映射一致：去空格，查库前剥掉末尾 -NW。"""
+    text = series.map(lambda v: "" if pd.isna(v) else str(v).strip())
+    text = text.mask(text.isin(_BLANK), "")
+    nw_mask = text.str.endswith("-NW", na=False)
+    lookup = text.mask(nw_mask, text.str.replace(r"-NW$", "", regex=True))
+    return lookup, nw_mask
+
+
+def fetch_product_sku_attrs(sku_keys: list[str]) -> dict[str, dict[str, str]]:
+    """
+    product_sku → 商品ID / 供应商 / 生命周期。
+    对应原 Excel：产品编码→商品ID，SKU→供应商，AMZ新老品 / 本土平台新老品。
+    """
+    sku_keys = sorted({str(x).strip() for x in sku_keys if x and str(x).strip()})
+    if not sku_keys:
+        return {}
+
+    sql = f"""
+        SELECT product_sku, product_uid, supplier_abbr, amz_lifecycle, local_lifecycle
+        FROM `{PRODUCT_SKU_TABLE}`
+        WHERE product_sku IN ({{placeholders}})
+          AND COALESCE(is_deleted, 0) = 0
+    """
+    db = get_db_manager()
+    conn = db.get_connection()
+    cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        rows: list[dict] = []
+        for i in range(0, len(sku_keys), _KEY_CHUNK):
+            chunk = sku_keys[i : i + _KEY_CHUNK]
+            placeholders = ",".join(["%s"] * len(chunk))
+            cur.execute(sql.format(placeholders=placeholders), tuple(chunk))
+            rows.extend(cur.fetchall())
+    finally:
+        cur.close()
+        conn.close()
+
+    out: dict[str, dict[str, str]] = {}
+    for row in rows:
+        sku = str(row.get("product_sku") or "").strip()
+        if not sku:
+            continue
+        out[sku] = {
+            "product_uid": str(row.get("product_uid") or "").strip(),
+            "supplier_abbr": str(row.get("supplier_abbr") or "").strip(),
+            "amz_lifecycle": str(row.get("amz_lifecycle") or "").strip(),
+            "local_lifecycle": str(row.get("local_lifecycle") or "").strip(),
+        }
+    return out
+
 
 # TODO 文件路径！！！
 main_file_path = fr"{DESKTOP_ROOT}\{folder_name}{shared_date}\订单统计\(已完成-13-1)订单统计-{shared_date}.xlsx"
@@ -22,70 +83,69 @@ main_file_df.drop(columns=['原-其他分摊费用', 'EU-其他分摊费用-需�
 # 替换 相同产品的SKU  避免产品信息库 映射不到
 main_file_df.loc[main_file_df['SKU'] == 'CY9901', 'SKU'] = 'ECY9901'  # CY9901 替换成 ECY9901
 
-# 映射 供应商
-product_map_sku_path = r"\\Betohow\数据报表\数据库\BTH全部SKU明细-v2026.06.02.xlsx"
+# 供应商、商品ID、产品状态 ← product_sku
+lookup_keys, nw_mask = _lookup_sku_keys(main_file_df["SKU"])
+sku_attrs = fetch_product_sku_attrs(lookup_keys.tolist())
+is_amazon = main_file_df["平台"].astype(str).str.contains("AMAZON", case=False, na=False)
 
-main_file_df = sku_mappings(
-    main_df=main_file_df,
-    main_sku='SKU',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="SKU",
-    map_new_sku="供应商",
-    map_sku_sheet='基础数据维护'
-)
-main_file_df = main_file_df.rename(columns={'映射供应商': '供应商'})
+supplier_list: list[str | None] = []
+product_uid_list: list[str | None] = []
+status_list: list[str | None] = []
+hit_supplier = hit_uid = hit_status = 0
+for key, amazon, has_nw, raw_sku in zip(
+    lookup_keys.tolist(),
+    is_amazon.tolist(),
+    nw_mask.tolist(),
+    main_file_df["SKU"].tolist(),
+):
+    attrs = sku_attrs.get(key) if key else None
+    if not attrs:
+        supplier_list.append(None)
+        # 与原 sku_mappings 一致：商品ID 未命中时保留原 SKU
+        product_uid_list.append(None if pd.isna(raw_sku) else str(raw_sku).strip())
+        status_list.append(None)
+        continue
 
-product_map_sku_path = r"\\Betohow\数据报表\数据库\产品信息库2025.xlsx"  # 改成对应的映射表
-# 映射 商品ID
-main_file_df_1 = sku_mappings(
-    main_df=main_file_df,
-    main_sku='SKU',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="产品编码",
-    map_new_sku="商品ID",
-    map_sku_sheet='产品信息表'
+    supplier = attrs["supplier_abbr"] or None
+    uid = attrs["product_uid"]
+    if uid and has_nw:
+        uid = f"{uid}-NW"
+    status = (attrs["amz_lifecycle"] if amazon else attrs["local_lifecycle"]) or None
+
+    supplier_list.append(supplier)
+    product_uid_list.append(uid or (None if pd.isna(raw_sku) else str(raw_sku).strip()))
+    status_list.append(status)
+    if supplier:
+        hit_supplier += 1
+    if uid:
+        hit_uid += 1
+    if status:
+        hit_status += 1
+
+main_file_df_1 = main_file_df.copy()
+main_file_df_1["供应商"] = supplier_list
+main_file_df_1["商品ID"] = product_uid_list
+main_file_df_1["产品状态"] = status_list
+print(
+    f"[DB] product_sku 映射：唯一SKU={len(sku_attrs)}，"
+    f"供应商命中行={hit_supplier}/{len(main_file_df_1)}，"
+    f"商品ID命中行={hit_uid}/{len(main_file_df_1)}，"
+    f"产品状态命中行={hit_status}/{len(main_file_df_1)}"
 )
-# 重命名列
-main_file_df_1 = main_file_df_1.rename(columns={'映射商品ID': '商品ID'})
 
 main_file_df_1["站点商品ID识别码"] = main_file_df_1["站点"] + main_file_df_1["商品ID"]  # 新列数据
 main_file_df_1["平台商品ID识别码"] = main_file_df_1["平台"] + main_file_df_1["商品ID"]  # 新列数据
 
-# 映射产品状态
-# 拆分数据  平台 是否包含 AMAZON
-df_amazon = main_file_df_1[main_file_df_1['平台'].str.contains('AMAZON', case=False, na=False)]
-df_not_amazon = main_file_df_1[~main_file_df_1['平台'].str.contains('AMAZON', case=False, na=False)]
-# 映射 AMAZON 的 产品状态
-df_amazon_1 = sku_mappings(
-    main_df=df_amazon,
-    main_sku='商品ID',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="商品ID",
-    map_new_sku="AMZ新老品",
-    map_sku_sheet='产品信息表'
-)
-df_amazon_1 = df_amazon_1.rename(columns={'映射AMZ新老品': '产品状态'})
-# 映射 非MAZON 的 产品状态
-df_not_amazon_1 = sku_mappings(
-    main_df=df_not_amazon,
-    main_sku='商品ID',
-    map_sku_path=product_map_sku_path,
-    map_old_sku="商品ID",
-    map_new_sku="本土平台新老品",
-    map_sku_sheet='产品信息表'
-)
-df_not_amazon_1 = df_not_amazon_1.rename(columns={'映射本土平台新老品': '产品状态'})
-# 合并数据
-main_file_df_2 = pd.concat([df_amazon_1, df_not_amazon_1]).reset_index(drop=True)
+main_file_df_2 = main_file_df_1.reset_index(drop=True)
 
 # 再次映射产品状态，映射自己记录的分销。以及其它一些产品的产品状态
-product_map_sku_path = fr'{DESKTOP_ROOT}\信息-映射.xlsx'
+info_map_path = str(INFO_MAP_XLSX)
 # 筛选产品状态为空的行
 no_state_df = main_file_df_2[main_file_df_2['产品状态'].isna()]
 no_state_df_1 = sku_mappings(
     main_df=no_state_df,
     main_sku='SKU',
-    map_sku_path=product_map_sku_path,
+    map_sku_path=info_map_path,
     map_old_sku="SKU",
     map_new_sku="产品状态",
     map_sku_sheet='产品状态'
